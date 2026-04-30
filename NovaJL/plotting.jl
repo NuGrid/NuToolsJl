@@ -1,351 +1,256 @@
-module Plotting
-    using ..NovaPPN: AbundanceSet
-    using DataFrames
-    using Plots
-    using CairoMakie
-    using LaTeXStrings
+using Plots
 
-    export analyze_factor, plot_trajectory, abundance_chart, reaction_stylepoint_table
+const REACTION_STYLES = Dict(
+    "18F_pa_15O" => (color = "#1f77b4", marker = :circle),
+    "3He_ag_7Be" => (color = "#ff7f0e", marker = :rect),
+    "7Be_pg_8B" => (color = "#2ca02c", marker = :diamond),
+    "13N_pg_14O" => (color = "#d62728", marker = :utriangle),
+    "13C_pg_14N" => (color = "#9467bd", marker = :dtriangle),
+    "14N_pg_15O" => (color = "#8c564b", marker = :star5),
+    "15N_pa_12C" => (color = "#e377c2", marker = :hexagon),
+    "16O_pg_17F" => (color = "#7f7f7f", marker = :cross),
+    "17O_pg_18F" => (color = "#bcbd22", marker = :xcross),
+    "17O_pa_14N" => (color = "#17becf", marker = :pentagon),
+    "18F_pg_19Ne" => (color = "#393b79", marker = :circle),
+    "18O_pa_15N" => (color = "#637939", marker = :rect),
+    "19F_pg_20Ne" => (color = "#8c6d31", marker = :diamond),
+    "19F_pa_16O" => (color = "#843c39", marker = :utriangle),
+    "20Ne_pg_21Na" => (color = "#7b4173", marker = :dtriangle),
+    "21Ne_pg_22Na" => (color = "#3182bd", marker = :star5),
+    "22Ne_pg_23Na" => (color = "#e6550d", marker = :hexagon),
+    "21Na_pg_22Mg" => (color = "#31a354", marker = :cross),
+    "22Na_pg_23Mg" => (color = "#756bb1", marker = :xcross),
+    "23Na_pg_24Mg" => (color = "#636363", marker = :pentagon),
+    "23Na_pa_20Ne" => (color = "#6baed6", marker = :circle),
+    "25Mg_pg_26Al" => (color = "#fd8d3c", marker = :rect),
+    "26Mg_pg_27Al" => (color = "#74c476", marker = :diamond),
+    "26Al_pg_27Si" => (color = "#9e9ac8", marker = :utriangle),
+    "27Al_pg_28Si" => (color = "#969696", marker = :dtriangle),
+    "28Si_pg_29P" => (color = "#9ecae1", marker = :star5),
+    "29Si_pg_30P" => (color = "#fdae6b", marker = :hexagon),
+    "30Si_pg_31P" => (color = "#a1d99b", marker = :cross),
+    "30P_pg_31S" => (color = "#bcbddc", marker = :xcross),
+    "31P_pa_28Si" => (color = "#bdbdbd", marker = :pentagon),
+    "32S_pg_33Cl" => (color = "#08519c", marker = :circle),
+    "33S_pg_34Cl" => (color = "#a63603", marker = :rect),
+    "34S_pg_35Cl" => (color = "#006d2c", marker = :diamond),
+    "36Ar_pg_37K" => (color = "#54278f", marker = :utriangle),
+    "37Ar_pg_38K" => (color = "#252525", marker = :dtriangle),
+    "38Ar_pg_39K" => (color = "#6b6ecf", marker = :star5),
+    "38K_pg_39Ca" => (color = "#bd9e39", marker = :hexagon),
+    "39K_pg_40Ca" => (color = "#ad494a", marker = :cross),
+)
 
-    const REACTION_COLORS = [
-        :blue, :orange, :green, :red, :purple, :brown, :pink, :gray,
-        :olive, :cyan, :magenta, :gold, :navy, :teal, :coral, :black
-    ]
+function reaction_styles(reactions = nothing)
+    reactions === nothing && return copy(REACTION_STYLES)
 
-    const REACTION_MARKERS = [
-        :circle, :rect, :diamond, :utriangle, :dtriangle, :star5,
-        :hexagon, :cross, :xcross
-    ]
-
-    function _read_reaction_plan_entries(config_path::AbstractString)
-        if !isfile(config_path)
-            candidate_paths = [
-                joinpath("..", config_path),
-                joinpath("..", "..", config_path),
-                joinpath("config", "reaction_plan.json"),
-                joinpath("..", "config", "reaction_plan.json"),
-            ]
-
-            found = findfirst(isfile, candidate_paths)
-            if found !== nothing
-                config_path = candidate_paths[found]
-            else
-                error("Reaction plan not found: $config_path")
-            end
-        end
-
-        text = read(config_path, String)
-        entries = Vector{NamedTuple{(:reaction, :index), Tuple{String, Union{Missing, Int}}}}()
-
-        for m in eachmatch(r"\{[^{}]*\"name\"\s*:\s*\"([^\"]+)\"[^{}]*\}"s, text)
-            block = m.match
-            name = m.captures[1]
-            index_match = match(r"\"index\"\s*:\s*([0-9]+)", block)
-            index = index_match === nothing ? missing : parse(Int, index_match.captures[1])
-            push!(entries, (reaction=name, index=index))
-        end
-
-        return entries
+    styles = Dict()
+    for reaction in sort(unique(collect(skipmissing(reactions))))
+        styles[string(reaction)] = reaction_style(REACTION_STYLES, reaction)
     end
+    return styles
+end
 
-    function _stylepoint_table_from_reactions(reactions; indices=nothing)
-        markers = Symbol[]
-        colors = Symbol[]
-        style_ids = Int[]
+function reaction_style(styles, reaction)
+    return get(styles, string(reaction), (color = "#777777", marker = :circle))
+end
 
-        for i in eachindex(reactions)
-            color_i = REACTION_COLORS[mod1(i, length(REACTION_COLORS))]
-            marker_i = REACTION_MARKERS[mod1(i, length(REACTION_MARKERS))]
-            push!(colors, color_i)
-            push!(markers, marker_i)
-            push!(style_ids, i)
-        end
+function scatter_reactions!(p, df, x, y; styles, ylabel_prefix = "", markerstrokecolor = :auto)
+    for df_reaction in groupby(df, :reaction)
+        reaction = first(df_reaction.reaction)
+        style = reaction_style(styles, reaction)
+        rows = parentindices(df_reaction)[1]
 
-        index_col = indices === nothing ? fill(missing, length(reactions)) : indices
-
-        return DataFrame(
-            style_id = style_ids,
-            reaction = collect(reactions),
-            index = index_col,
-            color = colors,
-            marker = markers
+        scatter!(
+            p,
+            x[rows],
+            y[rows],
+            label = string(ylabel_prefix, reaction),
+            color = style.color,
+            markercolor = style.color,
+            markershape = style.marker,
+            markerstrokecolor = markerstrokecolor,
+            markersize = 6,
         )
     end
+end
 
-    function reaction_stylepoint_table(config_path::AbstractString="novae/nova_test/config/reaction_plan.json")
-        entries = _read_reaction_plan_entries(config_path)
-        reactions = [entry.reaction for entry in entries]
-        indices = [entry.index for entry in entries]
-        return _stylepoint_table_from_reactions(reactions; indices=indices)
+function plot_trajectory(filepath; title = "Trajectory")
+    trajectory = read_trajectory(filepath)
+    return plot_trajectory(trajectory; title = title)
+end
+
+function plot_trajectory(trajectory::DataFrame; title = "Trajectory")
+    if nrow(trajectory) == 0
+        throw(ArgumentError("trajectory contains no data points"))
     end
 
-    function _style_lookup(style_table)
-        lookup = Dict{String, NamedTuple{(:color, :marker), Tuple{Symbol, Symbol}}}()
+    p = plot(
+        trajectory.time_s,
+        trajectory.temperature_T9,
+        xlabel = "Time (s)",
+        ylabel = "Temperature (T9)",
+        title = title,
+        label = "Temperature",
+        color = :red,
+        linewidth = 2,
+        yscale = :log10,
+        legend = :topright,
+        xguidefontcolor = :black,
+        xtickfontcolor = :black,
+        yguidefontcolor = :red,
+        ytickfontcolor = :red,
+    )
 
-        for row in eachrow(style_table)
-            lookup[String(row.reaction)] = (color=Symbol(row.color), marker=Symbol(row.marker))
-        end
+    plot!(
+        twinx(p),
+        trajectory.time_s,
+        trajectory.density_cgs,
+        ylabel = "Density (g cm^-3)",
+        label = "Density",
+        color = :blue,
+        linewidth = 2,
+        yscale = :log10,
+        xguidefontcolor = :black,
+        xtickfontcolor = :black,
+        yguidefontcolor = :blue,
+        ytickfontcolor = :blue,
+        legend = :bottomright,
+    )
 
-        return lookup
+    return p
+end
+
+function plot_dens_temp(filepath; title = "Density vs Temperature")
+    trajectory = read_trajectory(filepath)
+    return plot_dens_temp(trajectory; title = title)
+end
+
+function plot_dens_temp(trajectory::DataFrame; title = "Density vs Temperature")
+    if nrow(trajectory) == 0
+        throw(ArgumentError("trajectory contains no data points"))
     end
 
-    function _offset_by_isotope_and_reaction(df, isotope_index)
-        offsets = zeros(Float64, nrow(df))
+    return plot(
+        trajectory.temperature_T9,
+        trajectory.density_cgs,
+        xlabel = "Temperature (T9)",
+        ylabel = "Density (g cm^-3)",
+        title = title,
+        label = "Density",
+        color = :blue,
+        linewidth = 2,
+        xscale = :log10,
+        yscale = :log10,
+        xguidefontcolor = :black,
+        xtickfontcolor = :black,
+        yguidefontcolor = :blue,
+        ytickfontcolor = :blue,
+        legend = :topright,
+    )
+end
 
-        for iso in unique(df.isotope)
-            rows = findall(==(iso), df.isotope)
-            reactions = hasproperty(df, :reaction) ? unique(df.reaction[rows]) : [""]
-            reaction_rank = Dict(reaction => i for (i, reaction) in enumerate(reactions))
-            n = length(reactions)
-            step = n <= 1 ? 0.0 : min(0.12, 0.45 / max(n - 1, 1))
+function analyze_factor(df_compare, f)
 
-            for row_i in rows
-                rank = reaction_rank[hasproperty(df, :reaction) ? df.reaction[row_i] : ""]
-                offsets[row_i] = (rank - (n + 1) / 2) * step
-            end
-        end
+    # -------------------------
+    # COLUMN NAMES
+    # -------------------------
+    col_ppn = Symbol(f * "_ppn")
+    col_iliadis = Symbol(f * "_iliadis")
+    col_ratio = Symbol(f * "_ratio")
 
-        return [isotope_index[iso] + offsets[i] for (i, iso) in enumerate(df.isotope)]
-    end
+    # -------------------------
+    # FILTER VALID ROWS
+    # -------------------------
+    df_valid = filter(row ->
+        !ismissing(row[col_ppn]) &&
+        !ismissing(row[col_iliadis]),
+        df_compare
+    )
 
-    function _scatter_reactions!(plot_obj, df, xcol, ycol, style_table; show_reaction_legend=false)
-        lookup = _style_lookup(style_table)
+    # -------------------------
+    # COMPUTE METRICS
+    # -------------------------
+    df_valid.ratio = df_valid[!, col_ppn] ./ df_valid[!, col_iliadis]
 
-        for reaction in unique(df.reaction)
-            rows = findall(==(reaction), df.reaction)
-            style = get(lookup, String(reaction), (color=:black, marker=:circle))
+    df_valid.logratio = log10.(df_valid.ratio)
+    df_valid.dev = abs.(df_valid.logratio)
+    styles = reaction_styles(df_valid.reaction)
 
-            Plots.scatter!(
-                plot_obj,
-                df[rows, xcol],
-                df[rows, ycol],
-                color = style.color,
-                marker = style.marker,
-                label = show_reaction_legend ? String(reaction) : "",
-            )
-        end
+    # -------------------------
+    # SCATTER: PPN vs Iliadis
+    # -------------------------
+    p1 = plot(
+        xlabel = "Iliadis",
+        ylabel = "PPN",
+        title = "PPN vs Iliadis (factor = $f)",
+        xscale = :log10,
+        yscale = :log10,
+        legend = :outerright,
+    )
 
-        return plot_obj
-    end
+    scatter_reactions!(
+        p1,
+        df_valid,
+        df_valid[!, col_iliadis],
+        df_valid[!, col_ppn];
+        styles = styles,
+        markerstrokecolor = :auto,
+    )
+    plot!(p1, [1e-3, 10], [1e-3, 10], linestyle=:dash, label="y = x")
 
-    function analyze_factor(df_compare, f; style_table=nothing, config_path=nothing, show_reaction_legend=false, return_style_table=false)
-        
-        # -------------------------
-        # COLUMN NAMES
-        # -------------------------
-        col_ppn = Symbol(f * "_ppn")
-        col_iliadis = Symbol(f * "_iliadis")
-        col_ratio = Symbol(f * "_ratio")
-    
-        # -------------------------
-        # FILTER VALID ROWS
-        # -------------------------
-        df_valid = filter(row ->
-            !ismissing(row[col_ppn]) &&
-            !ismissing(row[col_iliadis]),
-            df_compare
-        )
+    # -------------------------
+    # GROUP BY ISOTOPE
+    # -------------------------
+    isotopes = unique(df_valid.isotope)
+    iso_index = Dict(iso => i for (i, iso) in enumerate(isotopes))
+    x = [iso_index[iso] for iso in df_valid.isotope]
 
-        # -------------------------
-        # COMPUTE METRICS
-        # -------------------------
-        df_valid.ratio = df_valid[!, col_ppn] ./ df_valid[!, col_iliadis]
-    
-        df_valid.logratio = log10.(df_valid.ratio)
-        df_valid.dev = abs.(df_valid.logratio)
-        has_reaction = hasproperty(df_valid, :reaction)
+    # -------------------------
+    # LOG RATIO PLOT
+    # -------------------------
+    p2 = plot(
+        xticks = (1:length(isotopes), isotopes),
+        xlabel = "Isotope",
+        ylabel = "log10(PPN / Iliadis)",
+        title = "Log Ratio (factor = $f)",
+        xrotation = 60,
+        size = (900, 400),
+        ylims = (-1, 3),
+        legend = :outerright,
+    )
 
-        if has_reaction
-            df_valid.reaction = String.(df_valid.reaction)
+    scatter_reactions!(
+        p2,
+        df_valid,
+        x,
+        df_valid.logratio;
+        styles = styles,
+        markerstrokecolor = :auto,
+    )
+    hline!(p2, [0.0], linestyle=:dash, label = "0")
 
-            if style_table === nothing
-                if config_path !== nothing
-                    style_table = reaction_stylepoint_table(config_path)
-                else
-                    reactions = unique(df_valid.reaction)
-                    style_table = _stylepoint_table_from_reactions(reactions)
-                end
-            end
-        end
+    # -------------------------
+    # DEVIATION PLOT
+    # -------------------------
+    p3 = plot(
+        xticks = (1:length(isotopes), isotopes),
+        xlabel = "Isotope",
+        ylabel = "|log10(PPN / Iliadis)|",
+        title = "Deviation (factor = $f)",
+        xrotation = 60,
+        size = (900, 400),
+        legend = :outerright,
+    )
 
-        # -------------------------
-        # SCATTER: PPN vs Iliadis
-        # -------------------------
-        p1 = Plots.plot(
-            xlabel = "Iliadis",
-            ylabel = "PPN",
-            title = "PPN vs Iliadis (factor = $f)",
-            label = "",
-            xscale = :log10,
-            yscale = :log10
-        )
+    scatter_reactions!(
+        p3,
+        df_valid,
+        x,
+        df_valid.dev;
+        styles = styles,
+        markerstrokecolor = :auto,
+    )
 
-        if has_reaction
-            _scatter_reactions!(p1, df_valid, col_iliadis, col_ppn, style_table; show_reaction_legend=show_reaction_legend)
-        else
-            Plots.scatter!(p1, df_valid[!, col_iliadis], df_valid[!, col_ppn], label = "")
-        end
-
-        Plots.plot!(p1, [1e-3, 10], [1e-3, 10], linestyle=:dash, label="y = x")
-
-        # -------------------------
-        # GROUP BY ISOTOPE
-        # -------------------------
-        isotopes = unique(df_valid.isotope)
-        iso_index = Dict(iso => i for (i, iso) in enumerate(isotopes))
-        x = has_reaction ? _offset_by_isotope_and_reaction(df_valid, iso_index) : [iso_index[iso] for iso in df_valid.isotope]
-        df_valid.plot_x = x
-
-        # -------------------------
-        # LOG RATIO PLOT
-        # -------------------------
-        p2 = Plots.plot(
-            xticks = (1:length(isotopes), isotopes),
-            xlabel = "Isotope",
-            ylabel = "log10(PPN / Iliadis)",
-            title = "Log Ratio (factor = $f)",
-            label = "",
-            xrotation = 60,
-            size = (900, 400),
-            ylims = (-1, 3)
-        )
-
-        if has_reaction
-            _scatter_reactions!(p2, df_valid, :plot_x, :logratio, style_table; show_reaction_legend=show_reaction_legend)
-        else
-            Plots.scatter!(p2, x, df_valid.logratio, label = "")
-        end
-
-        Plots.hline!(p2, [0.0], linestyle=:dash)
-    
-        # -------------------------
-        # DEVIATION PLOT
-        # -------------------------
-        p3 = Plots.plot(
-            xticks = (1:length(isotopes), isotopes),
-            xlabel = "Isotope",
-            ylabel = "|log10(PPN / Iliadis)|",
-            title = "Deviation (factor = $f)",
-            label = "",
-            xrotation = 60,
-            size = (900, 400)
-        )
-
-        if has_reaction
-            _scatter_reactions!(p3, df_valid, :plot_x, :dev, style_table; show_reaction_legend=show_reaction_legend)
-        else
-            Plots.scatter!(p3, x, df_valid.dev, label = "")
-        end
-
-        return return_style_table && has_reaction ? (p1, p2, p3, df_valid, style_table) : (p1, p2, p3, df_valid)
-    end
-
-    # Dependent on the ELEMENT_Z found in utils, if you want to see more isotopes
-    # please go and extend the list of isotopes you would like to see. 
-    # Since this is a nova analysis tool, we have only implemented isotopes occurent in nova
-    # which is usually up to Ca
-    function abundance_chart(ab::AbundanceSet;
-                logscale=true,
-                zmax=nothing,
-                title="Abundance Chart")
-    
-        # Extract arrays
-        Z = [iso.Z for iso in ab.isotopes]
-        N = [iso.N for iso in ab.isotopes]
-        X = [iso.X for iso in ab.isotopes]
-        names = [iso.name for iso in ab.isotopes]
-
-        valid = [(Z[i] != 0 || N[i] != 0) && X[i] > 0 for i in eachindex(Z)]
-        Z = Z[valid]
-        N = N[valid]
-        X = X[valid]
-        names = names[valid]
-
-        # Optional Z cutoff
-        if zmax !== nothing
-            mask = Z .<= zmax
-            Z, N, X, names = Z[mask], N[mask], X[mask], names[mask]
-        end
-
-        # turn into log scale
-        values = logscale ? log10.(X .+ 1e-30) : X
-
-        fig = CairoMakie.Figure(size=(1000, 800))
-        ax = CairoMakie.Axis(fig[1,1],
-                  xlabel="Neutron number (N)",
-                  ylabel="Atomic number (Z)",
-                  title=title,
-                  xgridvisible=false,
-                  ygridvisible=false
-                )
-    
-        rects = Rect[]
-        colors = Float64[]
-        size = 1.0
-        for i in eachindex(names)
-            push!(rects, Rect(N[i]-size/2, Z[i]-size/2, size, size))
-            push!(colors, values[i])
-        end
-
-        p = CairoMakie.poly!(ax, rects,
-                  color=colors,
-                  colormap=:linear_wyor_100_45_c55_n256,
-                  strokecolor=:black,
-                  strokewidth=1.0
-                )
-
-        # add isotope labels
-        for i in eachindex(names)
-            CairoMakie.text!(ax, N[i], Z[i],
-                  text=names[i],
-                  align=(:center, :center),
-                  fontsize=8,
-                  font=:bold,
-                  color=:black)
-        end
-
-        CairoMakie.Colorbar(fig[1,2], p, label="log10(X)")
-        return fig
-    end
-
-    function plot_trajectory(df)
-
-        fig = CairoMakie.Figure(size=(1000, 600))
-
-        ax1 = CairoMakie.Axis(fig[1,1],
-            xlabel = "Time (minutes)",
-            ylabel = "Temperature (GK)",
-            yticklabelcolor = :red,
-            ylabelcolor = :red
-        )
-
-        ax2 = CairoMakie.Axis(fig[1,1],
-            yaxisposition = :right,
-            ylabel = "Density (g/cm⁻³)",
-            yticklabelcolor = :blue,
-            ylabelcolor = :blue,
-            yscale = log10
-        )
-
-        # Temperature (left axis)
-        CairoMakie.lines!(ax1, df.time, df.T, color=:red, label="Temperature")
-
-        # Density (right axis)
-        CairoMakie.lines!(ax2, df.time, df.rho, color=:blue, label="Density")
-
-        # link x-axis
-        CairoMakie.linkxaxes!(ax1, ax2)
-
-        imax = argmax(df.T)
-    
-        CairoMakie.scatter!(ax1,
-            [df.time[imax]],
-            [df.T[imax]],
-            color = :black,
-            markersize = 10
-        )
-
-        return fig
-    end
-
-end # module
+    return p1, p2, p3, df_valid
+end

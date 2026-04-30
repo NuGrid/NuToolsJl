@@ -1,61 +1,8 @@
-using DataFrames
-
-function read_initial_abundance(filepath)
-
-    isotopes = String[]
-    values   = Float64[]
-
-    for line in eachline(filepath)
-
-        line = strip(line)
-        isempty(line) && continue
-
-        parts = split(line)
-
-        try
-            Z = parse(Int, parts[1])
-
-            if uppercase(parts[2]) == "PROT"
-                isotope = "H-1"
-                X = parse(Float64, parts[end])
-
-            else
-                raw = lowercase(parts[2])
-
-                if length(parts) >= 3 && occursin(r"^\d+$", parts[3])
-                    symbol = uppercase(raw)
-                    A = parse(Int, parts[3])
-                else
-                    m = match(r"([a-z]+)(\d+)", raw)
-                    m === nothing && continue
-
-                    symbol = uppercase(m.captures[1])
-                    A = parse(Int, m.captures[2])
-                end
-
-                X = parse(Float64, parts[end])
-                isotope = symbol * "-" * string(A)
-            end
-
-            push!(isotopes, isotope)
-            push!(values, X)
-
-        catch
-            continue
-        end
-    end
-
-    return DataFrame(isotope=isotopes, X=values)
-end
-
-
 function read_iso_massf(filepath)
-
     isotopes = String[]
-    values   = Float64[]
+    values = Float64[]
 
     for line in eachline(filepath)
-
         line = strip(line)
 
         isempty(line) && continue
@@ -93,30 +40,65 @@ function read_iso_massf(filepath)
     return DataFrame(isotope=isotopes, X=values)
 end
 
-
 function read_trajectory(filepath)
-
     time = Float64[]
-    T    = Float64[]
-    rho  = Float64[]
+    temperature = Float64[]
+    density = Float64[]
+
+    ageunit = "SEC"
+    tunit = "T9K"
+    rhounit = "CGS"
 
     for line in eachline(filepath)
-
         line = strip(line)
+
         isempty(line) && continue
         startswith(line, "#") && continue
+
+        if occursin("=", line)
+            key, value = strip.(split(line, "=", limit=2))
+            key = uppercase(key)
+            value = uppercase(value)
+
+            key == "AGEUNIT" && (ageunit = value; continue)
+            key == "TUNIT" && (tunit = value; continue)
+            key == "RHOUNIT" && (rhounit = value; continue)
+            continue
+        end
 
         parts = split(line)
         length(parts) < 3 && continue
 
         try
-            push!(time, parse(Float64, parts[1]))
-            push!(T,    parse(Float64, parts[2]))
-            push!(rho,  parse(Float64, parts[3]))
+            tval = parse(Float64, parts[1])
+            Tval = parse(Float64, parts[2])
+            rhoval = parse(Float64, parts[3])
+
+            if ageunit in ("YRS", "YR", "YEAR", "YEARS")
+                tval *= 365.25 * 24.0 * 3600.0
+            elseif !(ageunit in ("SEC", "S"))
+                throw(DomainError(ageunit, "unsupported trajectory AGEUNIT"))
+            end
+
+            if tunit == "T8K"
+                Tval /= 10.0
+            elseif tunit != "T9K"
+                throw(DomainError(tunit, "unsupported trajectory TUNIT; expected T9K or T8K"))
+            end
+
+            if rhounit == "LOG"
+                rhoval = 10.0^rhoval
+            elseif rhounit != "CGS"
+                throw(DomainError(rhounit, "unsupported trajectory RHOUNIT; expected CGS or LOG"))
+            end
+
+            push!(time, tval)
+            push!(temperature, Tval)
+            push!(density, rhoval)
         catch
             continue
         end
     end
 
-    return DataFrame(time=time, T=T, rho=rho)
+    return DataFrame(time_s=time, temperature_T9=temperature, density_cgs=density)
 end
