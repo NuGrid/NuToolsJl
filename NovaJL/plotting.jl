@@ -260,6 +260,145 @@ function read_abundance_chart_data(filepath; element_limit = "Ca", tolerance = 1
     return DataFrame(A=A, N=N, Z=Z, abundance=abundance, element=element, isotope=isotope)
 end
 
+function read_flow_chart_data(filepath; element_limit = "Ca", tolerance = 1e-10)
+    max_z = element_z(element_limit)
+    flows = Dict{Tuple{Int, Int, Int, Int, Int, Int, Int, Int}, Float64}()
+
+    for line in eachline(filepath)
+        line = strip(line)
+
+        isempty(line) && continue
+        startswith(line, "#") && continue
+
+        parts = split(line)
+        length(parts) < 10 && continue
+
+        try
+            z_start = parse(Int, parts[2])
+            a_start = parse(Int, parts[3])
+            z_end = parse(Int, parts[8])
+            a_end = parse(Int, parts[9])
+            flux = parse(Float64, parts[10])
+
+            z_start < 1 && continue
+            z_end < 1 && continue
+            z_start > max_z && continue
+            z_end > max_z && continue
+            flux < tolerance && continue
+
+            n_start = a_start - z_start
+            n_end = a_end - z_end
+            n_start == n_end && z_start == z_end && continue
+
+            key = (n_start, z_start, n_end, z_end, a_start, z_start, a_end, z_end)
+            flows[key] = get(flows, key, 0.0) + flux
+        catch
+            continue
+        end
+    end
+
+    n_start = Int[]
+    z_start = Int[]
+    n_end = Int[]
+    z_end = Int[]
+    a_start = Int[]
+    a_end = Int[]
+    flux = Float64[]
+
+    for (key, value) in flows
+        push!(n_start, key[1])
+        push!(z_start, key[2])
+        push!(n_end, key[3])
+        push!(z_end, key[4])
+        push!(a_start, key[5])
+        push!(a_end, key[7])
+        push!(flux, value)
+    end
+
+    return DataFrame(
+        n_start = n_start,
+        z_start = z_start,
+        n_end = n_end,
+        z_end = z_end,
+        a_start = a_start,
+        a_end = a_end,
+        flux = flux,
+    )
+end
+
+function chart_tile_color(value, color_limits; target_color = CM.RGBAf(1.0, 0.0, 0.0, 1.0))
+    color_fraction = clamp((value - color_limits[1]) / (color_limits[2] - color_limits[1]), 0.0, 1.0)
+    return CM.RGBAf(
+        1.0 + color_fraction * (target_color.r - 1.0),
+        1.0 + color_fraction * (target_color.g - 1.0),
+        1.0 + color_fraction * (target_color.b - 1.0),
+        1.0,
+    )
+end
+
+function chart_colormap_color(value, color_limits, colormap)
+    color_fraction = clamp((value - color_limits[1]) / (color_limits[2] - color_limits[1]), 0.0, 1.0)
+    return CM.cgrad(colormap)[color_fraction]
+end
+
+function draw_isotope_tiles!(
+    ax,
+    isotopes::DataFrame;
+    value_col,
+    color_limits,
+    mass_label_size = 8,
+)
+    for row in eachrow(isotopes)
+        value = log10(max(row[value_col], 10.0^color_limits[1]))
+        corners = CM.Point2f[
+            (row.N - 0.5, row.Z - 0.5),
+            (row.N + 0.5, row.Z - 0.5),
+            (row.N + 0.5, row.Z + 0.5),
+            (row.N - 0.5, row.Z + 0.5),
+        ]
+
+        CM.poly!(
+            ax,
+            corners,
+            color = chart_tile_color(value, color_limits),
+            strokecolor = :black,
+            strokewidth = 1,
+        )
+
+        CM.text!(
+            ax,
+            string(row.A),
+            position = (row.N, row.Z),
+            align = (:center, :center),
+            fontsize = mass_label_size,
+            color = :black,
+        )
+    end
+end
+
+function add_element_labels!(
+    ax,
+    row_data::DataFrame,
+    min_n,
+    max_z;
+    element_label_size = 16,
+)
+    for z in 1:max_z
+        rows = filter(row -> row.Z == z, row_data)
+        n_label = nrow(rows) == 0 ? min_n - 1.5 : minimum(rows.N) - 0.75
+
+        CM.text!(
+            ax,
+            element_symbol(z),
+            position = (n_label, z),
+            align = (:right, :center),
+            fontsize = element_label_size,
+            font = :bold,
+            color = :black,
+        )
+    end
+end
+
 #=
 function abundance_chart(filepath; element_limit = "Ca", tolerance = 1e-10, title = "Abundance Chart")
     abundances = read_abundance_chart_data(
@@ -369,7 +508,7 @@ function abundance_chart(
     title = "Abundance Chart",
     figure_size = (900, 650),
     element_label_size = 16,
-    mass_label_size = 8,
+    mass_label_size = 12,
 )
     if nrow(abundances) == 0
         throw(ArgumentError("no isotopes found at or above tolerance=$tolerance up to element_limit=$element_limit"))
@@ -449,6 +588,217 @@ function abundance_chart(
         colormap = colormap,
         colorrange = color_limits,
         label = "log10(X)",
+    )
+
+    return fig
+end
+
+function flow_tile_data(flows::DataFrame)
+    tiles = Dict{Tuple{Int, Int}, Int}()
+
+    for row in eachrow(flows)
+        tiles[(row.n_start, row.z_start)] = row.a_start
+        tiles[(row.n_end, row.z_end)] = row.a_end
+    end
+
+    N = Int[]
+    Z = Int[]
+    A = Int[]
+
+    for ((n, z), a) in tiles
+        push!(N, n)
+        push!(Z, z)
+        push!(A, a)
+    end
+
+    return DataFrame(N=N, Z=Z, A=A)
+end
+
+function draw_empty_isotope_tiles!(ax, tiles::DataFrame; mass_label_size = 8)
+    for row in eachrow(tiles)
+        corners = CM.Point2f[
+            (row.N - 0.5, row.Z - 0.5),
+            (row.N + 0.5, row.Z - 0.5),
+            (row.N + 0.5, row.Z + 0.5),
+            (row.N - 0.5, row.Z + 0.5),
+        ]
+
+        CM.poly!(
+            ax,
+            corners,
+            color = :white,
+            strokecolor = :black,
+            strokewidth = 1,
+        )
+
+        CM.text!(
+            ax,
+            string(row.A),
+            position = (row.N, row.Z),
+            align = (:center, :center),
+            fontsize = mass_label_size,
+            color = :black,
+        )
+    end
+end
+
+function draw_arrow!(
+    ax,
+    x1,
+    y1,
+    x2,
+    y2;
+    color,
+    linewidth = 2,
+    head_length = 0.22,
+    head_width = 0.16,
+)
+    dx = x2 - x1
+    dy = y2 - y1
+    distance = hypot(dx, dy)
+    distance == 0 && return
+
+    ux = dx / distance
+    uy = dy / distance
+    px = -uy
+    py = ux
+
+    start_margin = min(0.35, 0.25 * distance)
+    end_margin = min(0.45, 0.35 * distance)
+    sx = x1 + start_margin * ux
+    sy = y1 + start_margin * uy
+    tip_x = x2 - end_margin * ux
+    tip_y = y2 - end_margin * uy
+    base_x = tip_x - head_length * ux
+    base_y = tip_y - head_length * uy
+
+    CM.lines!(
+        ax,
+        [sx, base_x],
+        [sy, base_y],
+        color = color,
+        linewidth = linewidth,
+    )
+
+    CM.poly!(
+        ax,
+        CM.Point2f[
+            (tip_x, tip_y),
+            (base_x + 0.5 * head_width * px, base_y + 0.5 * head_width * py),
+            (base_x - 0.5 * head_width * px, base_y - 0.5 * head_width * py),
+        ],
+        color = color,
+        strokecolor = color,
+    )
+end
+
+function flow_chart(
+    filepath;
+    element_limit = "Ca",
+    tolerance = 1e-10,
+    title = "Flow Chart",
+    figure_size = (900, 650),
+    element_label_size = 16,
+    mass_label_size = 8,
+    arrow_linewidth = 2,
+)
+    flows = read_flow_chart_data(
+        filepath;
+        element_limit = element_limit,
+        tolerance = tolerance,
+    )
+    return flow_chart(
+        flows;
+        element_limit = element_limit,
+        tolerance = tolerance,
+        title = title,
+        figure_size = figure_size,
+        element_label_size = element_label_size,
+        mass_label_size = mass_label_size,
+        arrow_linewidth = arrow_linewidth,
+    )
+end
+
+function flow_chart(
+    flows::DataFrame;
+    element_limit = "Ca",
+    tolerance = 1e-10,
+    title = "Flow Chart",
+    figure_size = (900, 650),
+    element_label_size = 16,
+    mass_label_size = 12,
+    arrow_linewidth = 4,
+)
+    if nrow(flows) == 0
+        throw(ArgumentError("no fluxes found at or above tolerance=$tolerance up to element_limit=$element_limit"))
+    end
+
+    max_z = element_z(element_limit)
+    tiles = flow_tile_data(flows)
+    min_n = minimum(tiles.N)
+    max_n = maximum(tiles.N)
+    min_x = min_n - 3.0
+    max_x = max_n + 1.0
+    min_y = -0.5
+    max_y = max_z + 1.0
+    log_flux = log10.(max.(flows.flux, tolerance))
+    color_limits = (log10(tolerance), maximum(log_flux))
+    color_limits[1] == color_limits[2] && (color_limits = (color_limits[1], color_limits[1] + 1.0))
+    colormap = :heat
+
+    fig = CM.Figure(size = figure_size)
+    ax = CM.Axis(
+        fig[1, 1],
+        xlabel = "neutron number (A-Z)",
+        ylabel = "proton number (Z)",
+        title = title,
+        aspect = CM.DataAspect(),
+        xgridvisible = false,
+        ygridvisible = false,
+        xticks = min_n:max_n,
+        yticks = 0:2:max_z,
+        limits = (min_x, max_x, min_y, max_y),
+    )
+
+    draw_empty_isotope_tiles!(ax, tiles; mass_label_size = mass_label_size)
+
+    for (row, value) in zip(eachrow(flows), log_flux)
+        arrow_color = chart_colormap_color(value, color_limits, colormap)
+        draw_arrow!(
+            ax,
+            row.n_start,
+            row.z_start,
+            row.n_end,
+            row.z_end;
+            color = arrow_color,
+            linewidth = arrow_linewidth,
+        )
+    end
+
+    for row in eachrow(tiles)
+        CM.text!(
+            ax,
+            string(row.A),
+            position = (row.N, row.Z),
+            align = (:center, :center),
+            fontsize = mass_label_size,
+            color = :black,
+        )
+    end
+
+    add_element_labels!(
+        ax,
+        tiles,
+        min_n,
+        max_z;
+        element_label_size = element_label_size,
+    )
+
+    CM.Colorbar(
+        fig[1, 2],
+        colormap = colormap,
+        colorrange = color_limits,
+        label = "log10(flux)",
     )
 
     return fig
