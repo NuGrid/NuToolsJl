@@ -1,6 +1,10 @@
 # NovaJL
 An analysis package to analyse NuGrid post processing network (PPN) data used for nuclear reaction rate sensitivity studies
 
+## Trajectory
+
+<img width="600" height="400" alt="Trajectory" src="https://github.com/user-attachments/assets/7c00434b-a6d2-4e04-b568-209b59568170" />
+
 ## Abundance Chart
 
 <img width="1800" height="1300" alt="abundance_chart" src="https://github.com/user-attachments/assets/e3852f94-d2c0-462d-9e80-82dd30b1d221" />
