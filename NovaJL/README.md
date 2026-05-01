@@ -3,7 +3,7 @@ An analysis package to analyse NuGrid post processing network (PPN) data used fo
 
 ## Trajectory
 
-<img width="600" height="400" alt="Trajectory" src="https://github.com/user-attachments/assets/7c00434b-a6d2-4e04-b568-209b59568170" />
+<img width="600" height="400" alt="Trajectory" src="https://github.com/user-attachments/assets/302b7f77-8ce8-42d0-9987-52ff5a2f1019" />
 
 ## Abundance Chart
 
