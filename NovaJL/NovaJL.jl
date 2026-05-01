@@ -22,6 +22,8 @@ export read_iso_massf,
        reaction_styles,
        plot_trajectory,
        plot_dens_temp,
+       abundance_chart,
+       flow_chart,
        analyze_factor
 
 end

@@ -1,4 +1,38 @@
 using Plots
+import CairoMakie as CM
+
+const ELEMENT_SYMBOLS = [
+    "n", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
+    "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
+    "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
+    "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
+    "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
+    "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
+    "Pa", "U",
+]
+
+const ELEMENT_NAMES = [
+    "neutron", "hydrogen", "helium", "lithium", "beryllium", "boron",
+    "carbon", "nitrogen", "oxygen", "fluorine", "neon", "sodium",
+    "magnesium", "aluminum", "silicon", "phosphorus", "sulfur",
+    "chlorine", "argon", "potassium", "calcium", "scandium", "titanium",
+    "vanadium", "chromium", "manganese", "iron", "cobalt", "nickel",
+    "copper", "zinc", "gallium", "germanium", "arsenic", "selenium",
+    "bromine", "krypton", "rubidium", "strontium", "yttrium",
+    "zirconium", "niobium", "molybdenum", "technetium", "ruthenium",
+    "rhodium", "palladium", "silver", "cadmium", "indium", "tin",
+    "antimony", "tellurium", "iodine", "xenon", "cesium", "barium",
+    "lanthanum", "cerium", "praseodymium", "neodymium", "promethium",
+    "samarium", "europium", "gadolinium", "terbium", "dysprosium",
+    "holmium", "erbium", "thulium", "ytterbium", "lutetium", "hafnium",
+    "tantalum", "tungsten", "rhenium", "osmium", "iridium", "platinum",
+    "gold", "mercury", "thallium", "lead", "bismuth", "polonium",
+    "astatine", "radon", "francium", "radium", "actinium", "thorium",
+    "protactinium", "uranium",
+]
 
 const REACTION_STYLES = Dict(
     "18F_pa_15O" => (color = "#1f77b4", marker = :circle),
@@ -148,6 +182,276 @@ function plot_dens_temp(trajectory::DataFrame; title = "Density vs Temperature")
         ytickfontcolor = :blue,
         legend = :topright,
     )
+end
+
+function element_z(element_limit)
+    if element_limit isa Integer
+        return Int(element_limit)
+    end
+
+    value = string(element_limit)
+    symbol = uppercasefirst(lowercase(value))
+    symbol_idx = findfirst(==(symbol), ELEMENT_SYMBOLS)
+    symbol_idx !== nothing && return symbol_idx - 1
+
+    name = lowercase(value)
+    name_idx = findfirst(==(name), ELEMENT_NAMES)
+    name_idx !== nothing && return name_idx - 1
+
+    throw(ArgumentError("unknown element limit: $element_limit"))
+end
+
+function element_symbol(Z::Integer)
+    if 0 <= Z < length(ELEMENT_SYMBOLS)
+        return ELEMENT_SYMBOLS[Z + 1]
+    end
+    return string("Z=", Z)
+end
+
+function read_abundance_chart_data(filepath; element_limit = "Ca", tolerance = 1e-10)
+    max_z = element_z(element_limit)
+
+    A = Int[]
+    N = Int[]
+    Z = Int[]
+    abundance = Float64[]
+    element = String[]
+    isotope = String[]
+
+    for line in eachline(filepath)
+        line = strip(line)
+
+        isempty(line) && continue
+        startswith(line, "#") && continue
+        startswith(line, "H NUM") && continue
+
+        parts = split(line)
+        length(parts) < 6 && continue
+
+        try
+            zval = Int(round(parse(Float64, parts[2])))
+            aval = Int(round(parse(Float64, parts[3])))
+            xval = parse(Float64, parts[5])
+
+            zval < 1 && continue
+            zval > max_z && continue
+            xval < tolerance && continue
+
+            symbol = if parts[end] == "PROT"
+                "H"
+            elseif length(parts) >= 7
+                uppercasefirst(lowercase(parts[6]))
+            else
+                m = match(r"([A-Za-z]+)(\d+)", parts[end])
+                m === nothing ? element_symbol(zval) : uppercasefirst(lowercase(m.captures[1]))
+            end
+
+            push!(A, aval)
+            push!(N, aval - zval)
+            push!(Z, zval)
+            push!(abundance, xval)
+            push!(element, symbol)
+            push!(isotope, string(symbol, "-", aval))
+        catch
+            continue
+        end
+    end
+
+    return DataFrame(A=A, N=N, Z=Z, abundance=abundance, element=element, isotope=isotope)
+end
+
+#=
+function abundance_chart(filepath; element_limit = "Ca", tolerance = 1e-10, title = "Abundance Chart")
+    abundances = read_abundance_chart_data(
+        filepath;
+        element_limit = element_limit,
+        tolerance = tolerance,
+    )
+    return abundance_chart(abundances; element_limit = element_limit, tolerance = tolerance, title = title)
+end
+
+function abundance_chart(abundances::DataFrame; element_limit = "Ca", tolerance = 1e-10, title = "Abundance Chart")
+    if nrow(abundances) == 0
+        throw(ArgumentError("no isotopes found at or above tolerance=$tolerance up to element_limit=$element_limit"))
+    end
+
+    max_z = element_z(element_limit)
+    min_n = minimum(abundances.N)
+    max_n = maximum(abundances.N)
+    n_values = collect(min_n:max_n)
+    z_values = collect(0:max_z)
+    log_abundance_grid = fill(NaN, length(z_values), length(n_values))
+
+    n_index = Dict(n => i for (i, n) in enumerate(n_values))
+    z_index = Dict(z => i for (i, z) in enumerate(z_values))
+
+    for row in eachrow(abundances)
+        log_abundance_grid[z_index[row.Z], n_index[row.N]] = log10(max(row.abundance, tolerance))
+    end
+
+    color_limits = (log10(tolerance), 0.0)
+
+    p = heatmap(
+        n_values,
+        z_values,
+        log_abundance_grid,
+        color = cgrad([:white, :red]),
+        clims = color_limits,
+        xlabel = "neutron number (A-Z)",
+        ylabel = "proton number (Z)",
+        title = title,
+        colorbar = true,
+        colorbar_title = "log10(X)",
+        xlims = (min_n - 3, max_n + 1),
+        ylims = (-0.5, max_z + 1.0),
+        xticks = min_n:max_n,
+        yticks = 0:2:max_z,
+        aspect_ratio = :equal,
+        grid = false,
+        legend = false,
+    )
+
+    for row in eachrow(abundances)
+        plot!(
+            p,
+            [row.N - 0.5, row.N + 0.5, row.N + 0.5, row.N - 0.5, row.N - 0.5],
+            [row.Z - 0.5, row.Z - 0.5, row.Z + 0.5, row.Z + 0.5, row.Z - 0.5],
+            color = :black,
+            linewidth = 1,
+            label = "",
+        )
+    end
+
+    for row in eachrow(abundances)
+        annotate!(p, row.N, row.Z, text(string(row.A), 6, :black, :center))
+    end
+
+    for z in 1:max_z
+        row_abundances = filter(row -> row.Z == z, abundances)
+        n_label = nrow(row_abundances) == 0 ? min_n - 1.5 : minimum(row_abundances.N) - 1.25
+        annotate!(p, n_label + 0.6, z, text(element_symbol(z), 7, :black, :right, "bold"))
+        #annotate!(p, n_label + 0.02, z, text(element_symbol(z), 10, :black, :right))
+    end
+
+    return p
+end
+=#
+
+function abundance_chart(
+    filepath;
+    element_limit = "Ca",
+    tolerance = 1e-10,
+    title = "Abundance Chart",
+    figure_size = (900, 650),
+    element_label_size = 16,
+    mass_label_size = 8,
+)
+    abundances = read_abundance_chart_data(
+        filepath;
+        element_limit = element_limit,
+        tolerance = tolerance,
+    )
+    return abundance_chart(
+        abundances;
+        element_limit = element_limit,
+        tolerance = tolerance,
+        title = title,
+        figure_size = figure_size,
+        element_label_size = element_label_size,
+        mass_label_size = mass_label_size,
+    )
+end
+
+function abundance_chart(
+    abundances::DataFrame;
+    element_limit = "Ca",
+    tolerance = 1e-10,
+    title = "Abundance Chart",
+    figure_size = (900, 650),
+    element_label_size = 16,
+    mass_label_size = 8,
+)
+    if nrow(abundances) == 0
+        throw(ArgumentError("no isotopes found at or above tolerance=$tolerance up to element_limit=$element_limit"))
+    end
+
+    max_z = element_z(element_limit)
+    min_n = minimum(abundances.N)
+    max_n = maximum(abundances.N)
+    min_x = min_n - 3.0
+    max_x = max_n + 1.0
+    min_y = -0.5
+    max_y = max_z + 1.0
+    color_limits = (log10(tolerance), 0.0)
+
+    fig = CM.Figure(size = figure_size)
+    ax = CM.Axis(
+        fig[1, 1],
+        xlabel = "neutron number (A-Z)",
+        ylabel = "proton number (Z)",
+        title = title,
+        aspect = CM.DataAspect(),
+        xgridvisible = false,
+        ygridvisible = false,
+        xticks = min_n:max_n,
+        yticks = 0:2:max_z,
+        limits = (min_x, max_x, min_y, max_y),
+    )
+
+    colormap = [:white, :red]
+
+    for row in eachrow(abundances)
+        value = log10(max(row.abundance, tolerance))
+        color_fraction = clamp((value - color_limits[1]) / (color_limits[2] - color_limits[1]), 0.0, 1.0)
+        tile_color = CM.RGBAf(1.0, 1.0 - color_fraction, 1.0 - color_fraction, 1.0)
+        corners = CM.Point2f[
+            (row.N - 0.5, row.Z - 0.5),
+            (row.N + 0.5, row.Z - 0.5),
+            (row.N + 0.5, row.Z + 0.5),
+            (row.N - 0.5, row.Z + 0.5),
+        ]
+
+        CM.poly!(
+            ax,
+            corners,
+            color = tile_color,
+            strokecolor = :black,
+            strokewidth = 1,
+        )
+
+        CM.text!(
+            ax,
+            string(row.A),
+            position = (row.N, row.Z),
+            align = (:center, :center),
+            fontsize = mass_label_size,
+            color = :black,
+        )
+    end
+
+    for z in 1:max_z
+        row_abundances = filter(row -> row.Z == z, abundances)
+        n_label = nrow(row_abundances) == 0 ? min_n - 1.5 : minimum(row_abundances.N) - 0.75
+
+        CM.text!(
+            ax,
+            element_symbol(z),
+            position = (n_label, z),
+            align = (:right, :center),
+            fontsize = element_label_size,
+            font = :bold,
+            color = :black,
+        )
+    end
+
+    CM.Colorbar(
+        fig[1, 2],
+        colormap = colormap,
+        colorrange = color_limits,
+        label = "log10(X)",
+    )
+
+    return fig
 end
 
 function analyze_factor(df_compare, f)
