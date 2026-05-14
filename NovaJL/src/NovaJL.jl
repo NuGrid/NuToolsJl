@@ -20,10 +20,12 @@ export read_iso_massf,
        dots_to_missing!,
        REACTION_STYLES,
        reaction_styles,
+       reaction_style_table,
        plot_trajectory,
        plot_dens_temp,
        abundance_chart,
        flow_chart,
+       flow_region_chart,
        analyze_factor
 
 end

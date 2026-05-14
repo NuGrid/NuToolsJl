@@ -89,7 +89,86 @@ function reaction_style(styles, reaction)
     return get(styles, string(reaction), (color = "#777777", marker = :circle))
 end
 
-function scatter_reactions!(p, df, x, y; styles, ylabel_prefix = "", markerstrokecolor = :auto)
+const MARKER_SYMBOLS = Dict(
+    :circle => "●",
+    :rect => "■",
+    :diamond => "◆",
+    :utriangle => "▲",
+    :dtriangle => "▼",
+    :star5 => "★",
+    :hexagon => "⬢",
+    :cross => "+",
+    :xcross => "×",
+    :pentagon => "⬟",
+)
+
+struct ReactionStyleTable
+    rows::Vector{NamedTuple{(:reaction, :color, :marker, :marker_symbol), Tuple{String, String, Symbol, String}}}
+end
+
+function reaction_style_table(reactions = nothing)
+    selected_reactions = if reactions === nothing
+        sort(collect(keys(REACTION_STYLES)))
+    else
+        sort(string.(collect(skipmissing(reactions))))
+    end
+
+    rows = [
+        (
+            reaction = reaction,
+            color = string(reaction_style(REACTION_STYLES, reaction).color),
+            marker = reaction_style(REACTION_STYLES, reaction).marker,
+            marker_symbol = get(MARKER_SYMBOLS, reaction_style(REACTION_STYLES, reaction).marker, "●"),
+        )
+        for reaction in selected_reactions
+    ]
+
+    return ReactionStyleTable(rows)
+end
+
+function Base.show(io::IO, table::ReactionStyleTable)
+    println(io, "Reaction style table")
+    for row in table.rows
+        println(io, row.reaction, "  ", row.color, "  ", row.marker)
+    end
+end
+
+function Base.show(io::IO, ::MIME"text/html", table::ReactionStyleTable)
+    print(io, """
+    <table style="border-collapse: collapse; font-family: sans-serif; font-size: 13px;">
+      <thead>
+        <tr>
+          <th style="text-align: left; padding: 4px 8px; border-bottom: 1px solid #999;">Reaction</th>
+          <th style="text-align: left; padding: 4px 8px; border-bottom: 1px solid #999;">Color</th>
+          <th style="text-align: left; padding: 4px 8px; border-bottom: 1px solid #999;">Marker</th>
+        </tr>
+      </thead>
+      <tbody>
+    """)
+
+    for row in table.rows
+        print(io, """
+        <tr>
+          <td style="padding: 3px 8px;">$(row.reaction)</td>
+          <td style="padding: 3px 8px;">
+            <span style="display: inline-block; width: 1em; height: 1em; background: $(row.color); border: 1px solid #333; vertical-align: -0.12em;"></span>
+            <code>$(row.color)</code>
+          </td>
+          <td style="padding: 3px 8px;">
+            <span style="color: $(row.color); font-size: 1.35em; font-weight: bold;">$(row.marker_symbol)</span>
+            <code>:$(row.marker)</code>
+          </td>
+        </tr>
+        """)
+    end
+
+    print(io, """
+      </tbody>
+    </table>
+    """)
+end
+
+function scatter_reactions!(p, df, x, y; styles, ylabel_prefix = "", markerstrokecolor = :auto, show_legend = false)
     for df_reaction in groupby(df, :reaction)
         reaction = first(df_reaction.reaction)
         style = reaction_style(styles, reaction)
@@ -99,7 +178,7 @@ function scatter_reactions!(p, df, x, y; styles, ylabel_prefix = "", markerstrok
             p,
             x[rows],
             y[rows],
-            label = string(ylabel_prefix, reaction),
+            label = show_legend ? string(ylabel_prefix, reaction) : "",
             color = style.color,
             markercolor = style.color,
             markershape = style.marker,
@@ -178,8 +257,8 @@ function plot_dens_temp(trajectory::DataFrame; title = "Density vs Temperature")
         yscale = :log10,
         xguidefontcolor = :black,
         xtickfontcolor = :black,
-        yguidefontcolor = :blue,
-        ytickfontcolor = :blue,
+        yguidefontcolor = :black,
+        ytickfontcolor = :black,
         legend = :topright,
     )
 end
@@ -206,6 +285,95 @@ function element_symbol(Z::Integer)
         return ELEMENT_SYMBOLS[Z + 1]
     end
     return string("Z=", Z)
+end
+
+function parse_network_species(text)
+    value = strip(text)
+
+    if value == "PROT"
+        return (A = 1, Z = 1, symbol = "H", label = "p")
+    elseif value == "NEUT"
+        return (A = 1, Z = 0, symbol = "n", label = "n")
+    elseif value == "OOOOO"
+        return (A = 0, Z = 0, symbol = "", label = "")
+    end
+
+    m = match(r"^([A-Z]+)\s*(\d+)$", value)
+    m === nothing && return nothing
+
+    symbol = uppercasefirst(lowercase(m.captures[1]))
+    zval = element_z(symbol)
+    aval = parse(Int, m.captures[2])
+    return (A = aval, Z = zval, symbol = symbol, label = string(aval, symbol))
+end
+
+function reaction_network_label(reactant, product, rtype)
+    if reactant === nothing || product === nothing
+        return string(rtype)
+    end
+
+    return string(reactant.label, rtype, product.label)
+end
+
+function read_network_reactions(networksetup_path)
+    reactions = Dict{Int, NamedTuple}()
+    isfile(networksetup_path) || return reactions
+
+    network_re = r"^\s*(\d+)\s+([TF])\s+(\d+)\s+(.{5})\s+\+\s+(\d+)\s+(.{5})\s+->\s+(\d+)\s+(.{5})\s+\+\s+(\d+)\s+(.{5})\s+\S+\s+(\S+)\s+(\S+)\s+(\d+)"
+
+    for line in eachline(networksetup_path)
+        m = match(network_re, line)
+        m === nothing && continue
+
+        idx = parse(Int, m.captures[1])
+        reactant = parse_network_species(m.captures[4])
+        projectile = parse_network_species(m.captures[6])
+        product = parse_network_species(m.captures[8])
+        ejectile = parse_network_species(m.captures[10])
+        source = m.captures[11]
+        rtype = m.captures[12]
+
+        reactions[idx] = (
+            active = m.captures[2] == "T",
+            reactant = reactant,
+            projectile = projectile,
+            product = product,
+            ejectile = ejectile,
+            source = source,
+            rtype = rtype,
+            label = reaction_network_label(reactant, product, rtype),
+        )
+    end
+
+    return reactions
+end
+
+function default_networksetup_path(filepath)
+    candidate = joinpath(dirname(filepath), "networksetup.txt")
+    return isfile(candidate) ? candidate : nothing
+end
+
+function value_in_region(value, region)
+    region === nothing && return true
+
+    if region isa Tuple && length(region) == 2
+        return first(region) <= value <= last(region)
+    elseif region isa AbstractRange
+        return value in region
+    elseif region isa AbstractVector
+        return value in region
+    elseif region isa Integer
+        return value == region
+    end
+
+    throw(ArgumentError("region must be nothing, an integer, a range, a vector, or a two-value tuple"))
+end
+
+function endpoint_in_region(a_start, z_start, a_end, z_end, a_range, z_range)
+    return value_in_region(a_start, a_range) &&
+        value_in_region(a_end, a_range) &&
+        value_in_region(z_start, z_range) &&
+        value_in_region(z_end, z_range)
 end
 
 function read_abundance_chart_data(filepath; element_limit = "Ca", tolerance = 1e-10)
@@ -326,6 +494,92 @@ function read_flow_chart_data(filepath; element_limit = "Ca", tolerance = 1e-10)
     )
 end
 
+function read_flow_region_chart_data(
+    filepath;
+    a_range = nothing,
+    z_range = nothing,
+    A_range = nothing,
+    Z_range = nothing,
+    tolerance = 1e-10,
+    networksetup_path = default_networksetup_path(filepath),
+)
+    selected_a_range = A_range === nothing ? a_range : A_range
+    selected_z_range = Z_range === nothing ? z_range : Z_range
+    reactions = networksetup_path === nothing ? Dict{Int, NamedTuple}() : read_network_reactions(networksetup_path)
+
+    reaction_index = Int[]
+    n_start = Int[]
+    z_start = Int[]
+    n_end = Int[]
+    z_end = Int[]
+    a_start = Int[]
+    a_end = Int[]
+    flux = Float64[]
+    reaction_label = String[]
+    source = String[]
+    annotation = String[]
+
+    for line in eachline(filepath)
+        line = strip(line)
+
+        isempty(line) && continue
+        startswith(line, "#") && continue
+
+        parts = split(line)
+        length(parts) < 10 && continue
+
+        try
+            idx = parse(Int, parts[1])
+            z1 = parse(Int, parts[2])
+            a1 = parse(Int, parts[3])
+            z2 = parse(Int, parts[8])
+            a2 = parse(Int, parts[9])
+            flow = parse(Float64, parts[10])
+
+            z1 < 1 && continue
+            z2 < 1 && continue
+            flow < tolerance && continue
+            endpoint_in_region(a1, z1, a2, z2, selected_a_range, selected_z_range) || continue
+
+            n1 = a1 - z1
+            n2 = a2 - z2
+            n1 == n2 && z1 == z2 && continue
+
+            metadata = get(reactions, idx, nothing)
+            label = metadata === nothing ? string("reaction ", idx) : metadata.label
+            src = metadata === nothing ? "unknown" : metadata.source
+
+            push!(reaction_index, idx)
+            push!(n_start, n1)
+            push!(z_start, z1)
+            push!(n_end, n2)
+            push!(z_end, z2)
+            push!(a_start, a1)
+            push!(a_end, a2)
+            push!(flux, flow)
+            push!(reaction_label, label)
+            push!(source, src)
+            push!(annotation, string(label, "\n", src))
+        catch
+            continue
+        end
+    end
+
+    return DataFrame(
+        reaction_index = reaction_index,
+        n_start = n_start,
+        z_start = z_start,
+        n_end = n_end,
+        z_end = z_end,
+        a_start = a_start,
+        a_end = a_end,
+        flux = flux,
+        reaction_label = reaction_label,
+        source = source,
+        annotation = annotation,
+    )
+end
+
 function chart_tile_color(value, color_limits; target_color = CM.RGBAf(1.0, 0.0, 0.0, 1.0))
     color_fraction = clamp((value - color_limits[1]) / (color_limits[2] - color_limits[1]), 0.0, 1.0)
     return CM.RGBAf(
@@ -381,9 +635,10 @@ function add_element_labels!(
     row_data::DataFrame,
     min_n,
     max_z;
+    min_z = 1,
     element_label_size = 16,
 )
-    for z in 1:max_z
+    for z in min_z:max_z
         rows = filter(row -> row.Z == z, row_data)
         n_label = nrow(rows) == 0 ? min_n - 1.5 : minimum(rows.N) - 0.75
 
@@ -692,12 +947,42 @@ function draw_arrow!(
     )
 end
 
+function draw_arrow_label!(
+    ax,
+    x1,
+    y1,
+    x2,
+    y2,
+    label;
+    fontsize = 8,
+    offset = 0.18,
+)
+    dx = x2 - x1
+    dy = y2 - y1
+    distance = hypot(dx, dy)
+    distance == 0 && return
+
+    px = -dy / distance
+    py = dx / distance
+    angle = atan(dy, dx)
+
+    CM.text!(
+        ax,
+        label,
+        position = ((x1 + x2) / 2 + offset * px, (y1 + y2) / 2 + offset * py),
+        align = (:center, :center),
+        rotation = angle,
+        fontsize = fontsize,
+        color = :black,
+    )
+end
+
 function flow_chart(
     filepath;
     element_limit = "Ca",
     tolerance = 1e-10,
     title = "Flow Chart",
-    figure_size = (900, 650),
+    figure_size = (1000, 1000),
     element_label_size = 16,
     mass_label_size = 8,
     arrow_linewidth = 2,
@@ -804,6 +1089,157 @@ function flow_chart(
     return fig
 end
 
+function flow_region_chart(
+    filepath;
+    a_range = nothing,
+    z_range = nothing,
+    A_range = nothing,
+    Z_range = nothing,
+    tolerance = 1e-10,
+    networksetup_path = default_networksetup_path(filepath),
+    title = "Regional Flow Chart",
+    figure_size = (900, 650),
+    element_label_size = 16,
+    mass_label_size = 12,
+    arrow_linewidth = 4,
+    reaction_label_size = 8,
+    show_reaction_labels = true,
+)
+    selected_a_range = A_range === nothing ? a_range : A_range
+    selected_z_range = Z_range === nothing ? z_range : Z_range
+
+    flows = read_flow_region_chart_data(
+        filepath;
+        a_range = selected_a_range,
+        z_range = selected_z_range,
+        tolerance = tolerance,
+        networksetup_path = networksetup_path,
+    )
+
+    return flow_region_chart(
+        flows;
+        a_range = selected_a_range,
+        z_range = selected_z_range,
+        tolerance = tolerance,
+        title = title,
+        figure_size = figure_size,
+        element_label_size = element_label_size,
+        mass_label_size = mass_label_size,
+        arrow_linewidth = arrow_linewidth,
+        reaction_label_size = reaction_label_size,
+        show_reaction_labels = show_reaction_labels,
+    )
+end
+
+function flow_region_chart(
+    flows::DataFrame;
+    a_range = nothing,
+    z_range = nothing,
+    A_range = nothing,
+    Z_range = nothing,
+    tolerance = 1e-10,
+    title = "Regional Flow Chart",
+    figure_size = (900, 650),
+    element_label_size = 16,
+    mass_label_size = 12,
+    arrow_linewidth = 4,
+    reaction_label_size = 8,
+    show_reaction_labels = true,
+)
+    if nrow(flows) == 0
+        throw(ArgumentError("no fluxes found at or above tolerance=$tolerance in the requested A/Z region"))
+    end
+
+    tiles = flow_tile_data(flows)
+    min_n = minimum(tiles.N)
+    max_n = maximum(tiles.N)
+    min_z = minimum(tiles.Z)
+    max_z = maximum(tiles.Z)
+    min_x = min_n - 3.0
+    max_x = max_n + 1.0
+    min_y = min_z - 0.75
+    max_y = max_z + 0.75
+    log_flux = log10.(max.(flows.flux, tolerance))
+    color_limits = (log10(tolerance), maximum(log_flux))
+    color_limits[1] == color_limits[2] && (color_limits = (color_limits[1], color_limits[1] + 1.0))
+    colormap = :heat
+
+    fig = CM.Figure(size = figure_size)
+    ax = CM.Axis(
+        fig[1, 1],
+        xlabel = "neutron number (A-Z)",
+        ylabel = "proton number (Z)",
+        title = title,
+        aspect = CM.DataAspect(),
+        xgridvisible = false,
+        ygridvisible = false,
+        xticks = min_n:max_n,
+        yticks = min_z:max_z,
+        limits = (min_x, max_x, min_y, max_y),
+    )
+
+    draw_empty_isotope_tiles!(ax, tiles; mass_label_size = mass_label_size)
+
+    sorted_flows = sort(flows, :flux)
+    sorted_log_flux = log10.(max.(sorted_flows.flux, tolerance))
+
+    for (row, value) in zip(eachrow(sorted_flows), sorted_log_flux)
+        arrow_color = chart_colormap_color(value, color_limits, colormap)
+        draw_arrow!(
+            ax,
+            row.n_start,
+            row.z_start,
+            row.n_end,
+            row.z_end;
+            color = arrow_color,
+            linewidth = arrow_linewidth,
+        )
+    end
+
+    if show_reaction_labels
+        for row in eachrow(sorted_flows)
+            draw_arrow_label!(
+                ax,
+                row.n_start,
+                row.z_start,
+                row.n_end,
+                row.z_end,
+                row.annotation;
+                fontsize = reaction_label_size,
+            )
+        end
+    end
+
+    for row in eachrow(tiles)
+        CM.text!(
+            ax,
+            string(row.A),
+            position = (row.N, row.Z),
+            align = (:center, :center),
+            fontsize = mass_label_size,
+            color = :black,
+        )
+    end
+
+    add_element_labels!(
+        ax,
+        tiles,
+        min_n,
+        max_z;
+        min_z = min_z,
+        element_label_size = element_label_size,
+    )
+
+    CM.Colorbar(
+        fig[1, 2],
+        colormap = colormap,
+        colorrange = color_limits,
+        label = "log10(flux)",
+    )
+
+    return fig
+end
+
 function analyze_factor(df_compare, f)
 
     # -------------------------
@@ -840,7 +1276,7 @@ function analyze_factor(df_compare, f)
         title = "PPN vs Iliadis (factor = $f)",
         xscale = :log10,
         yscale = :log10,
-        legend = :outerright,
+        legend = false,
     )
 
     scatter_reactions!(
@@ -851,7 +1287,7 @@ function analyze_factor(df_compare, f)
         styles = styles,
         markerstrokecolor = :auto,
     )
-    plot!(p1, [1e-3, 10], [1e-3, 10], linestyle=:dash, label="y = x")
+    plot!(p1, [1e-3, 10], [1e-3, 10], linestyle=:dash, label="")
 
     # -------------------------
     # GROUP BY ISOTOPE
@@ -869,9 +1305,9 @@ function analyze_factor(df_compare, f)
         ylabel = "log10(PPN / Iliadis)",
         title = "Log Ratio (factor = $f)",
         xrotation = 60,
-        size = (900, 400),
+        size = (800,600),
         ylims = (-1, 3),
-        legend = :outerright,
+        legend = false,
     )
 
     scatter_reactions!(
@@ -882,7 +1318,7 @@ function analyze_factor(df_compare, f)
         styles = styles,
         markerstrokecolor = :auto,
     )
-    hline!(p2, [0.0], linestyle=:dash, label = "0")
+    hline!(p2, [0.0], linestyle=:dash, label = "")
 
     # -------------------------
     # DEVIATION PLOT
@@ -893,8 +1329,8 @@ function analyze_factor(df_compare, f)
         ylabel = "|log10(PPN / Iliadis)|",
         title = "Deviation (factor = $f)",
         xrotation = 60,
-        size = (900, 400),
-        legend = :outerright,
+        size = (800, 600),
+        legend = false,
     )
 
     scatter_reactions!(
