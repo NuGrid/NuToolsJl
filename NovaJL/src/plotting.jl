@@ -507,17 +507,7 @@ function read_flow_region_chart_data(
     selected_z_range = Z_range === nothing ? z_range : Z_range
     reactions = networksetup_path === nothing ? Dict{Int, NamedTuple}() : read_network_reactions(networksetup_path)
 
-    reaction_index = Int[]
-    n_start = Int[]
-    z_start = Int[]
-    n_end = Int[]
-    z_end = Int[]
-    a_start = Int[]
-    a_end = Int[]
-    flux = Float64[]
-    reaction_label = String[]
-    source = String[]
-    annotation = String[]
+    candidates = NamedTuple[]
 
     for line in eachline(filepath)
         line = strip(line)
@@ -538,7 +528,6 @@ function read_flow_region_chart_data(
 
             z1 < 1 && continue
             z2 < 1 && continue
-            flow < tolerance && continue
             endpoint_in_region(a1, z1, a2, z2, selected_a_range, selected_z_range) || continue
 
             n1 = a1 - z1
@@ -548,21 +537,104 @@ function read_flow_region_chart_data(
             metadata = get(reactions, idx, nothing)
             label = metadata === nothing ? string("reaction ", idx) : metadata.label
             src = metadata === nothing ? "unknown" : metadata.source
+            active = metadata === nothing ? true : metadata.active
 
-            push!(reaction_index, idx)
-            push!(n_start, n1)
-            push!(z_start, z1)
-            push!(n_end, n2)
-            push!(z_end, z2)
-            push!(a_start, a1)
-            push!(a_end, a2)
-            push!(flux, flow)
-            push!(reaction_label, label)
-            push!(source, src)
-            push!(annotation, string(label, "\n", src))
+            push!(
+                candidates,
+                (
+                    reaction_index = idx,
+                    n_start = n1,
+                    z_start = z1,
+                    n_end = n2,
+                    z_end = z2,
+                    a_start = a1,
+                    a_end = a2,
+                    flux = flow,
+                    reaction_label = label,
+                    source = src,
+                    active = active,
+                ),
+            )
         catch
             continue
         end
+    end
+
+    duplicate_groups = Dict{Tuple{Int, Int, Int, Int, Int, Int, String}, Vector{NamedTuple}}()
+
+    for candidate in candidates
+        key = (
+            candidate.n_start,
+            candidate.z_start,
+            candidate.n_end,
+            candidate.z_end,
+            candidate.a_start,
+            candidate.a_end,
+            candidate.reaction_label,
+        )
+        push!(get!(duplicate_groups, key, NamedTuple[]), candidate)
+    end
+
+    endpoint_groups = Dict{Tuple{Int, Int, Int, Int, Int, Int}, Vector{NamedTuple}}()
+
+    for group in values(duplicate_groups)
+        active_rows = filter(row -> row.active, group)
+        selected_rows = isempty(active_rows) ? group : active_rows
+        selected_flux = sum(row.flux for row in selected_rows)
+        selected_flux < tolerance && continue
+
+        first_row = first(selected_rows)
+        sources = sort(unique([string(row.source) for row in selected_rows]))
+        indices = sort(unique([row.reaction_index for row in selected_rows]))
+        endpoint_key = (
+            first_row.n_start,
+            first_row.z_start,
+            first_row.n_end,
+            first_row.z_end,
+            first_row.a_start,
+            first_row.a_end,
+        )
+
+        push!(
+            get!(endpoint_groups, endpoint_key, NamedTuple[]),
+            (
+                reaction_indices = join(indices, ","),
+                flux = selected_flux,
+                reaction_label = first_row.reaction_label,
+                source = join(sources, "/"),
+                annotation_part = string(first_row.reaction_label, " [", join(sources, "/"), "]"),
+            ),
+        )
+    end
+
+    reaction_index = String[]
+    n_start = Int[]
+    z_start = Int[]
+    n_end = Int[]
+    z_end = Int[]
+    a_start = Int[]
+    a_end = Int[]
+    flux = Float64[]
+    reaction_label = String[]
+    source = String[]
+    annotation = String[]
+
+    for (endpoint, rows) in endpoint_groups
+        sorted_rows = sort(rows, by = row -> row.reaction_label)
+        total_flux = sum(row.flux for row in sorted_rows)
+        parts = [row.annotation_part for row in sorted_rows]
+
+        push!(reaction_index, join([row.reaction_indices for row in sorted_rows], ","))
+        push!(n_start, endpoint[1])
+        push!(z_start, endpoint[2])
+        push!(n_end, endpoint[3])
+        push!(z_end, endpoint[4])
+        push!(a_start, endpoint[5])
+        push!(a_end, endpoint[6])
+        push!(flux, total_flux)
+        push!(reaction_label, join([row.reaction_label for row in sorted_rows], ", "))
+        push!(source, join([row.source for row in sorted_rows], ", "))
+        push!(annotation, join(parts, ",\n"))
     end
 
     return DataFrame(
@@ -982,7 +1054,7 @@ function flow_chart(
     element_limit = "Ca",
     tolerance = 1e-10,
     title = "Flow Chart",
-    figure_size = (1000, 1000),
+    figure_size = (900, 650),
     element_label_size = 16,
     mass_label_size = 8,
     arrow_linewidth = 2,
@@ -1155,7 +1227,7 @@ function flow_region_chart(
     max_n = maximum(tiles.N)
     min_z = minimum(tiles.Z)
     max_z = maximum(tiles.Z)
-    min_x = min_n - 3.0
+    min_x = min_n - 1.0
     max_x = max_n + 1.0
     min_y = min_z - 0.75
     max_y = max_z + 0.75
