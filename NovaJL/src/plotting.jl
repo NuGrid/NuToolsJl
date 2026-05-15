@@ -602,7 +602,7 @@ function read_flow_region_chart_data(
                 flux = selected_flux,
                 reaction_label = first_row.reaction_label,
                 source = join(sources, "/"),
-                annotation_part = string(first_row.reaction_label, " [", join(sources, "/"), "]"),
+                annotation_part = string(first_row.reaction_label, "\n", join(sources, "/")),
             ),
         )
     end
@@ -1176,6 +1176,7 @@ function flow_region_chart(
     arrow_linewidth = 4,
     reaction_label_size = 8,
     show_reaction_labels = true,
+    show_reaction_info = show_reaction_labels,
 )
     selected_a_range = A_range === nothing ? a_range : A_range
     selected_z_range = Z_range === nothing ? z_range : Z_range
@@ -1199,7 +1200,7 @@ function flow_region_chart(
         mass_label_size = mass_label_size,
         arrow_linewidth = arrow_linewidth,
         reaction_label_size = reaction_label_size,
-        show_reaction_labels = show_reaction_labels,
+        show_reaction_labels = show_reaction_info,
     )
 end
 
@@ -1217,6 +1218,7 @@ function flow_region_chart(
     arrow_linewidth = 4,
     reaction_label_size = 8,
     show_reaction_labels = true,
+    show_reaction_info = show_reaction_labels,
 )
     if nrow(flows) == 0
         throw(ArgumentError("no fluxes found at or above tolerance=$tolerance in the requested A/Z region"))
@@ -1268,7 +1270,7 @@ function flow_region_chart(
         )
     end
 
-    if show_reaction_labels
+    if show_reaction_info
         for row in eachrow(sorted_flows)
             draw_arrow_label!(
                 ax,
