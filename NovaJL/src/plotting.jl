@@ -263,6 +263,60 @@ function plot_dens_temp(trajectory::DataFrame; title = "Density vs Temperature")
     )
 end
 
+function plot_rate_curve(
+    reaction_name;
+    networksetup_path,
+    npdata_path,
+    temperatures = rate_curve_temperature_grid(),
+    source = nothing,
+    match_source_label = true,
+    max_files = 4,
+    title = nothing,
+)
+    curves = read_rate_curve_data(
+        reaction_name;
+        networksetup_path = networksetup_path,
+        npdata_path = npdata_path,
+        temperatures = temperatures,
+        source = source,
+        match_source_label = match_source_label,
+        max_files = max_files,
+    )
+
+    return plot_rate_curve(curves; reaction_name = reaction_name, title = title)
+end
+
+function plot_rate_curve(curves::DataFrame; reaction_name = "reaction", title = nothing)
+    if nrow(curves) == 0
+        throw(ArgumentError("rate curve data contains no rows"))
+    end
+
+    p = plot(
+        xlabel = "Temperature T9 (GK)",
+        ylabel = "Rate",
+        title = title === nothing ? "Rate curve: $reaction_name" : title,
+        xscale = :log10,
+        yscale = :log10,
+        legend = :outertopright,
+        xguidefontcolor = :black,
+        xtickfontcolor = :black,
+        yguidefontcolor = :black,
+        ytickfontcolor = :black,
+    )
+
+    for group in groupby(curves, [:label, :file, :network_source])
+        plot!(
+            p,
+            group.T9,
+            group.rate,
+            linewidth = 2,
+            label = string(first(group.label), " from ", first(group.file), " (", first(group.network_source), ")"),
+        )
+    end
+
+    return p
+end
+
 function element_z(element_limit)
     if element_limit isa Integer
         return Int(element_limit)
@@ -315,33 +369,57 @@ function reaction_network_label(reactant, product, rtype)
     return string(reactant.label, rtype, product.label)
 end
 
+function parse_network_float(value)
+    text = strip(string(value))
+    fixed = occursin(r"[EeDd]", text) ? replace(text, 'D' => 'E', 'd' => 'E') : replace(text, r"^([+-]?(?:\d+\.?\d*|\.\d+))([+-]\d+)$" => s"\1E\2")
+    return parse(Float64, fixed)
+end
+
 function read_network_reactions(networksetup_path)
     reactions = Dict{Int, NamedTuple}()
     isfile(networksetup_path) || return reactions
 
-    network_re = r"^\s*(\d+)\s+([TF])\s+(\d+)\s+(.{5})\s+\+\s+(\d+)\s+(.{5})\s+->\s+(\d+)\s+(.{5})\s+\+\s+(\d+)\s+(.{5})\s+\S+\s+(\S+)\s+(\S+)\s+(\d+)"
+    network_re = r"^\s*(\d+)\s+([TF])\s+(\d+)\s+(.{5})\s+\+\s+(\d+)\s+(.{5})\s+->\s+(\d+)\s+(.{5})\s+\+\s+(\d+)\s+(.{5})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)"
 
     for line in eachline(networksetup_path)
         m = match(network_re, line)
         m === nothing && continue
 
         idx = parse(Int, m.captures[1])
+        reactant_count = parse(Int, m.captures[3])
         reactant = parse_network_species(m.captures[4])
+        projectile_count = parse(Int, m.captures[5])
         projectile = parse_network_species(m.captures[6])
+        product_count = parse(Int, m.captures[7])
         product = parse_network_species(m.captures[8])
+        ejectile_count = parse(Int, m.captures[9])
         ejectile = parse_network_species(m.captures[10])
-        source = m.captures[11]
-        rtype = m.captures[12]
+        rate = parse_network_float(m.captures[11])
+        source = m.captures[12]
+        rtype = m.captures[13]
+        chapter = parse(Int, m.captures[14])
+        multiplier = parse_network_float(m.captures[15])
+        qvalue = parse_network_float(m.captures[16])
 
         reactions[idx] = (
+            index = idx,
             active = m.captures[2] == "T",
+            reactant_count = reactant_count,
             reactant = reactant,
+            projectile_count = projectile_count,
             projectile = projectile,
+            product_count = product_count,
             product = product,
+            ejectile_count = ejectile_count,
             ejectile = ejectile,
+            rate = rate,
             source = source,
             rtype = rtype,
+            chapter = chapter,
+            multiplier = multiplier,
+            qvalue = qvalue,
             label = reaction_network_label(reactant, product, rtype),
+            raw_line = line,
         )
     end
 
@@ -374,6 +452,585 @@ function endpoint_in_region(a_start, z_start, a_end, z_end, a_range, z_range)
         value_in_region(a_end, a_range) &&
         value_in_region(z_start, z_range) &&
         value_in_region(z_end, z_range)
+end
+
+function parse_rate_coefficients(line::AbstractString)
+    normalized = replace(String(line), 'D' => 'e', 'd' => 'e')
+    return [parse(Float64, m.match) for m in eachmatch(r"[+-]?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?", normalized)]
+end
+
+function normalize_reaclib_species(species)
+    value = lowercase(strip(string(species)))
+    value in ("prot", "h1") && return "p"
+    value in ("neut", "n1") && return "n"
+    value in ("ooooo", "g", "") && return ""
+    return value
+end
+
+function isotope_to_reaclib_species(text)
+    value = strip(string(text))
+    m = match(r"^(\d+)([A-Za-z]+)([gm]?)$", value)
+    m === nothing && throw(ArgumentError("could not parse isotope label: $text"))
+    return lowercase(string(m.captures[2], m.captures[1]))
+end
+
+function network_species_to_reaclib_species(species)
+    species === nothing && return ""
+    species.label == "p" && return "p"
+    species.label == "n" && return "n"
+    species.A == 0 && return ""
+    return lowercase(string(species.symbol, species.A))
+end
+
+function reaclib_chapter_counts(chapter::Integer, nspecies::Integer)
+    if chapter == 1
+        return (1, nspecies - 1)
+    elseif chapter == 2
+        return (1, 2)
+    elseif chapter == 3
+        return (1, 3)
+    elseif chapter == 4
+        return (2, 1)
+    elseif chapter == 5
+        return (2, 2)
+    elseif chapter == 6
+        return (2, 3)
+    elseif chapter == 7
+        return (2, 4)
+    elseif chapter == 8
+        return (3, 1)
+    end
+
+    throw(ArgumentError("unsupported REACLIB chapter: $chapter"))
+end
+
+function parse_reaclib_species_line(chapter::Integer, line::AbstractString)
+    tokens = split(line)
+    length(tokens) < 4 && return nothing
+
+    label = String(tokens[end - 1])
+    qvalue = try
+        parse(Float64, tokens[end])
+    catch
+        return nothing
+    end
+
+    species = normalize_reaclib_species.(tokens[1:end - 2])
+    nreactants, nproducts = reaclib_chapter_counts(chapter, length(species))
+    nreactants < 0 && return nothing
+    length(species) != nreactants + nproducts && return nothing
+
+    return (
+        reactants = sort(species[1:nreactants]),
+        products = sort(filter(!isempty, species[nreactants + 1:end])),
+        label = label,
+        qvalue = qvalue,
+    )
+end
+
+function read_reaclib_rate_blocks(filepath)
+    lines = [strip(line) for line in readlines(filepath) if !isempty(strip(line))]
+    blocks = NamedTuple[]
+    chapter = nothing
+    i = 1
+
+    while i <= length(lines)
+        line = lines[i]
+        if occursin(r"^[1-8]$", line)
+            chapter = parse(Int, line)
+            i += 1
+            continue
+        end
+
+        if chapter === nothing || i + 2 > length(lines)
+            i += 1
+            continue
+        end
+
+        parsed = parse_reaclib_species_line(chapter, lines[i])
+        coeffs = vcat(parse_rate_coefficients(lines[i + 1]), parse_rate_coefficients(lines[i + 2]))
+
+        if parsed !== nothing && length(coeffs) == 7
+            push!(
+                blocks,
+                (
+                    filepath = filepath,
+                    chapter = chapter,
+                    reactants = parsed.reactants,
+                    products = parsed.products,
+                    label = parsed.label,
+                    qvalue = parsed.qvalue,
+                    coefficients = Tuple(coeffs),
+                ),
+            )
+            i += 3
+        else
+            i += 1
+        end
+    end
+
+    return blocks
+end
+
+function reaclib_rate(coefficients, T9)
+    T9 <= 0 && throw(DomainError(T9, "temperature must be positive and in GK"))
+    T13 = T9^(1 / 3)
+    T53 = T9 * T13 * T13
+    a = coefficients
+    exponent = a[1] + a[2] / T9 + a[3] / T13 + a[4] * T13 + a[5] * T9 + a[6] * T53 + a[7] * log(T9)
+
+    exponent > log(floatmax(Float64)) && return Inf
+    exponent < log(floatmin(Float64)) && return 0.0
+    return exp(exponent)
+end
+
+function rate_curve_temperature_grid(; Tmin = 0.01, Tmax = 10.0, n = 300)
+    Tmin <= 0 && throw(ArgumentError("Tmin must be positive"))
+    Tmax <= Tmin && throw(ArgumentError("Tmax must be greater than Tmin"))
+    return 10 .^ range(log10(Tmin), log10(Tmax), length = n)
+end
+
+function parse_reaction_name_for_rate(reaction_name)
+    m = match(r"^(\d+[A-Za-z]+[gm]?)_([a-z]{2})_(\d+[A-Za-z]+[gm]?)$", string(reaction_name))
+    m === nothing && throw(ArgumentError("reaction name must look like 18F_pa_15O or 14N_pg_15O"))
+
+    target = isotope_to_reaclib_species(m.captures[1])
+    code = lowercase(m.captures[2])
+    product = isotope_to_reaclib_species(m.captures[3])
+
+    projectile = if startswith(code, "p")
+        "p"
+    elseif startswith(code, "a")
+        "he4"
+    elseif startswith(code, "n")
+        "n"
+    else
+        throw(ArgumentError("unsupported projectile code in reaction name: $reaction_name"))
+    end
+
+    products = if endswith(code, "g")
+        [product]
+    elseif endswith(code, "a")
+        sort([product, "he4"])
+    elseif endswith(code, "p")
+        sort([product, "p"])
+    elseif endswith(code, "n")
+        sort([product, "n"])
+    else
+        throw(ArgumentError("unsupported ejectile code in reaction name: $reaction_name"))
+    end
+
+    return (reactants = sort([target, projectile]), products = sort(products), code = code)
+end
+
+function reaction_matches_network_row(target, row)
+    reactants = sort(filter(!isempty, [
+        network_species_to_reaclib_species(row.reactant),
+        network_species_to_reaclib_species(row.projectile),
+    ]))
+    products = sort(filter(!isempty, [
+        network_species_to_reaclib_species(row.product),
+        network_species_to_reaclib_species(row.ejectile),
+    ]))
+
+    return reactants == target.reactants && products == target.products
+end
+
+function network_species_a(species)
+    species === nothing && return missing
+    return species.A == 0 ? missing : species.A
+end
+
+function network_species_z(species)
+    species === nothing && return missing
+    return species.A == 0 && species.Z == 0 ? missing : species.Z
+end
+
+function network_species_label(species)
+    species === nothing && return ""
+    return species.label
+end
+
+function matching_network_reactions(reaction_name, networksetup_path)
+    target = parse_reaction_name_for_rate(reaction_name)
+    reactions = read_network_reactions(networksetup_path)
+    matches = [(index = idx, row = row) for (idx, row) in reactions if reaction_matches_network_row(target, row)]
+    return sort(matches, by = match -> match.index)
+end
+
+function network_match_table(reaction_name, networksetup_path)
+    matches = matching_network_reactions(reaction_name, networksetup_path)
+    n_matches = length(matches)
+    active_count = count(match -> match.row.active, matches)
+
+    return DataFrame([
+        (
+            reaction = string(reaction_name),
+            network_index = match.index,
+            active = match.row.active,
+            source = match.row.source,
+            rtype = match.row.rtype,
+            chapter = match.row.chapter,
+            multiplier = match.row.multiplier,
+            rate = match.row.rate,
+            qvalue = match.row.qvalue,
+            label = match.row.label,
+            n_matching_rows = n_matches,
+            n_active_matching_rows = active_count,
+            reactant = network_species_label(match.row.reactant),
+            projectile = network_species_label(match.row.projectile),
+            product = network_species_label(match.row.product),
+            ejectile = network_species_label(match.row.ejectile),
+            a_start = network_species_a(match.row.reactant),
+            z_start = network_species_z(match.row.reactant),
+            a_end = network_species_a(match.row.product),
+            z_end = network_species_z(match.row.product),
+            networksetup_path = string(networksetup_path),
+            raw_line = match.row.raw_line,
+        )
+        for match in matches
+    ])
+end
+
+"""
+    reaction_audit(reaction_name; networksetup_path)
+
+Return the `networksetup.txt` rows that match a reaction name such as
+`"30P_pg_31S"`. The table includes active status, source, reaction type,
+multiplier, Q value, and duplicate-row counts.
+"""
+function reaction_audit(reaction_name; networksetup_path)
+    isfile(networksetup_path) || throw(ArgumentError("could not find networksetup file: $networksetup_path"))
+    return network_match_table(reaction_name, networksetup_path)
+end
+
+function factor_audit_rows(
+    reaction_name;
+    reaction_run_path,
+    factors,
+    networksetup_filename,
+    include_baseline,
+)
+    factor_entries = [(factor = 1.0, label = "baseline", run_path = joinpath(reaction_run_path, "baseline"))]
+
+    if !include_baseline
+        factor_entries = NamedTuple[]
+    end
+
+    for factor in factors
+        factor_label = factor_to_folder(factor)
+        push!(
+            factor_entries,
+            (
+                factor = Float64(factor),
+                label = factor_label,
+                run_path = joinpath(reaction_run_path, string(reaction_name), "fact_$(factor_label)"),
+            ),
+        )
+    end
+
+    rows = NamedTuple[]
+
+    for entry in factor_entries
+        networksetup_path = joinpath(entry.run_path, networksetup_filename)
+
+        if !isfile(networksetup_path)
+            push!(
+                rows,
+                (
+                    reaction = string(reaction_name),
+                    factor = entry.label,
+                    expected_multiplier = entry.factor,
+                    network_index = missing,
+                    active = missing,
+                    source = missing,
+                    rtype = missing,
+                    multiplier = missing,
+                    multiplier_over_expected = missing,
+                    factor_applied = false,
+                    n_matching_rows = 0,
+                    n_active_matching_rows = 0,
+                    networksetup_path = string(networksetup_path),
+                    raw_line = "",
+                ),
+            )
+            continue
+        end
+
+        audit = network_match_table(reaction_name, networksetup_path)
+
+        if nrow(audit) == 0
+            push!(
+                rows,
+                (
+                    reaction = string(reaction_name),
+                    factor = entry.label,
+                    expected_multiplier = entry.factor,
+                    network_index = missing,
+                    active = missing,
+                    source = missing,
+                    rtype = missing,
+                    multiplier = missing,
+                    multiplier_over_expected = missing,
+                    factor_applied = false,
+                    n_matching_rows = 0,
+                    n_active_matching_rows = 0,
+                    networksetup_path = string(networksetup_path),
+                    raw_line = "",
+                ),
+            )
+            continue
+        end
+
+        for row in eachrow(audit)
+            ratio = row.multiplier / entry.factor
+            push!(
+                rows,
+                (
+                    reaction = string(reaction_name),
+                    factor = entry.label,
+                    expected_multiplier = entry.factor,
+                    network_index = row.network_index,
+                    active = row.active,
+                    source = row.source,
+                    rtype = row.rtype,
+                    multiplier = row.multiplier,
+                    multiplier_over_expected = ratio,
+                    factor_applied = row.active && isapprox(row.multiplier, entry.factor; rtol = 1e-8, atol = 0.0),
+                    n_matching_rows = row.n_matching_rows,
+                    n_active_matching_rows = row.n_active_matching_rows,
+                    networksetup_path = row.networksetup_path,
+                    raw_line = row.raw_line,
+                ),
+            )
+        end
+    end
+
+    return rows
+end
+
+"""
+    factor_audit(reaction_name; reaction_run_path="../runs", factors=[100,10,2,0.5,0.1,0.01])
+
+Check each factored run for `reaction_name` and report whether the active
+matching `networksetup.txt` row has the expected multiplier.
+"""
+function factor_audit(
+    reaction_name;
+    reaction_run_path = "../runs",
+    factors = [100, 10, 2, 0.5, 0.1, 0.01],
+    networksetup_filename = "networksetup.txt",
+    include_baseline = true,
+)
+    return DataFrame(
+        factor_audit_rows(
+            reaction_name;
+            reaction_run_path = reaction_run_path,
+            factors = factors,
+            networksetup_filename = networksetup_filename,
+            include_baseline = include_baseline,
+        ),
+    )
+end
+
+function read_flux_values_by_index(flux_path)
+    flux_by_index = Dict{Int, Float64}()
+    isfile(flux_path) || return flux_by_index
+
+    for line in eachline(flux_path)
+        text = strip(line)
+        isempty(text) && continue
+        startswith(text, "#") && continue
+
+        parts = split(text)
+        length(parts) < 10 && continue
+
+        try
+            idx = parse(Int, parts[1])
+            flux = parse_network_float(parts[10])
+            flux_by_index[idx] = get(flux_by_index, idx, 0.0) + flux
+        catch
+            continue
+        end
+    end
+
+    return flux_by_index
+end
+
+"""
+    flux_audit(reaction_name; flux_path, networksetup_path=default_networksetup_path(flux_path))
+
+Return the flux carried by the `networksetup.txt` rows matching `reaction_name`.
+Use `tolerance` to hide smaller fluxes.
+"""
+function flux_audit(
+    reaction_name;
+    flux_path,
+    networksetup_path = default_networksetup_path(flux_path),
+    tolerance = 0.0,
+)
+    networksetup_path === nothing && throw(ArgumentError("networksetup_path was not provided and could not be inferred from $flux_path"))
+    isfile(flux_path) || throw(ArgumentError("could not find flux file: $flux_path"))
+    audit = reaction_audit(reaction_name; networksetup_path = networksetup_path)
+    flux_by_index = read_flux_values_by_index(flux_path)
+
+    rows = NamedTuple[]
+    for row in eachrow(audit)
+        flux = get(flux_by_index, row.network_index, 0.0)
+        abs(flux) < tolerance && continue
+
+        push!(
+            rows,
+            (
+                reaction = row.reaction,
+                network_index = row.network_index,
+                active = row.active,
+                source = row.source,
+                rtype = row.rtype,
+                multiplier = row.multiplier,
+                flux = flux,
+                abs_flux = abs(flux),
+                label = row.label,
+                flux_path = string(flux_path),
+                networksetup_path = row.networksetup_path,
+            ),
+        )
+    end
+
+    return DataFrame(rows)
+end
+
+function find_network_rate_row(reaction_name, networksetup_path)
+    target = parse_reaction_name_for_rate(reaction_name)
+    reactions = read_network_reactions(networksetup_path)
+    matches = [(index = idx, row = row) for (idx, row) in reactions if reaction_matches_network_row(target, row)]
+    isempty(matches) && throw(ArgumentError("could not find reaction $reaction_name in $networksetup_path"))
+
+    active_matches = filter(match -> match.row.active, matches)
+    selected = isempty(active_matches) ? sort(matches, by = match -> match.index)[1] : sort(active_matches, by = match -> match.index)[1]
+    return (
+        index = selected.index,
+        source = selected.row.source,
+        rtype = selected.row.rtype,
+        label = selected.row.label,
+        reactants = target.reactants,
+        products = target.products,
+    )
+end
+
+function candidate_reaclib_files(npdata_path, source)
+    reaclib_dir = joinpath(npdata_path, "REACLIB")
+    isdir(reaclib_dir) || throw(ArgumentError("could not find REACLIB directory under $npdata_path"))
+
+    files = [joinpath(reaclib_dir, file) for file in readdir(reaclib_dir) if isfile(joinpath(reaclib_dir, file))]
+    source_upper = uppercase(string(source))
+
+    priority_names = if source_upper == "JINAC"
+        ["reaclib.nosmo", "20120510ReaclibV1.1", "results01111258", "20081109ReaclibV0.5"]
+    elseif startswith(source_upper, "NACR")
+        ["reaclib.nosmo", "20120510ReaclibV1.1", "20081109ReaclibV0.5"]
+    elseif source_upper == "ILI01"
+        ["results01111258", "20120510ReaclibV1.1", "reaclib.nosmo"]
+    else
+        ["reaclib.nosmo", "20120510ReaclibV1.1", "results01111258", "20081109ReaclibV0.5"]
+    end
+
+    priority = Dict(name => i for (i, name) in enumerate(priority_names))
+    return sort(files, by = file -> get(priority, basename(file), length(priority_names) + 1))
+end
+
+function source_matches_reaclib_label(source, label)
+    source_upper = uppercase(string(source))
+    label_lower = lowercase(string(label))
+
+    if startswith(source_upper, "NACR")
+        return startswith(label_lower, lowercase(source_upper))
+    elseif source_upper == "ILI01"
+        return startswith(label_lower, "il01") || startswith(label_lower, "il10")
+    elseif source_upper == "JINAC"
+        return true
+    end
+
+    return startswith(label_lower, lowercase(source_upper))
+end
+
+function read_rate_curve_data(
+    reaction_name;
+    networksetup_path,
+    npdata_path,
+    temperatures = rate_curve_temperature_grid(),
+    source = nothing,
+    match_source_label = true,
+    max_files = 4,
+)
+    network_row = find_network_rate_row(reaction_name, networksetup_path)
+    selected_source = source === nothing ? network_row.source : string(source)
+    files = candidate_reaclib_files(npdata_path, selected_source)
+
+    matched_blocks = NamedTuple[]
+    for file in Iterators.take(files, max_files)
+        blocks = read_reaclib_rate_blocks(file)
+        append!(
+            matched_blocks,
+            [
+                block for block in blocks
+                if block.reactants == network_row.reactants &&
+                    block.products == network_row.products &&
+                    (!match_source_label || source_matches_reaclib_label(selected_source, block.label))
+            ],
+        )
+        !isempty(matched_blocks) && break
+    end
+
+    if isempty(matched_blocks) && match_source_label
+        return read_rate_curve_data(
+            reaction_name;
+            networksetup_path = networksetup_path,
+            npdata_path = npdata_path,
+            temperatures = temperatures,
+            source = selected_source,
+            match_source_label = false,
+            max_files = max_files,
+        )
+    end
+
+    isempty(matched_blocks) && throw(ArgumentError("could not find REACLIB rate data for $reaction_name under $npdata_path"))
+
+    grouped = Dict{String, Vector{NamedTuple}}()
+    for block in matched_blocks
+        push!(get!(grouped, block.label, NamedTuple[]), block)
+    end
+
+    T9 = Float64[]
+    rate = Float64[]
+    label = String[]
+    file = String[]
+    network_source = String[]
+    network_index = Int[]
+    qvalue = Float64[]
+
+    for (group_label, blocks) in grouped
+        for T in temperatures
+            total_rate = sum(reaclib_rate(block.coefficients, T) for block in blocks)
+            push!(T9, T)
+            push!(rate, total_rate)
+            push!(label, group_label)
+            push!(file, basename(first(blocks).filepath))
+            push!(network_source, network_row.source)
+            push!(network_index, network_row.index)
+            push!(qvalue, first(blocks).qvalue)
+        end
+    end
+
+    return DataFrame(
+        T9 = T9,
+        rate = rate,
+        label = label,
+        file = file,
+        network_source = network_source,
+        network_index = network_index,
+        qvalue = qvalue,
+    )
 end
 
 function read_abundance_chart_data(filepath; element_limit = "Ca", tolerance = 1e-10)
