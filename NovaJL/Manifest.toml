@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "1a88986620d8db9f899301ae4d4fcd4c71848107"
+project_hash = "02d2079d0c3e5f73268a0c9fdf4b43c8124ed4d2"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -1213,7 +1213,7 @@ uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
 version = "1.3.0"
 
 [[deps.NovaJL]]
-deps = ["CSV", "CairoMakie", "DataFrames", "LsqFit", "Plots", "Polynomials", "Revise"]
+deps = ["CSV", "CairoMakie", "DataFrames", "LsqFit", "Plots", "Polynomials", "Printf", "Revise"]
 path = "."
 uuid = "12345678-1234-1234-1234-123456789abc"
 version = "0.1.0"
