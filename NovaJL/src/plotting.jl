@@ -57,8 +57,12 @@ const REACTION_STYLES = Dict(
     "23Na_pg_24Mg" => (color = "#636363", marker = :pentagon),
     "23Na_pa_20Ne" => (color = "#6baed6", marker = :circle),
     "25Mg_pg_26Al" => (color = "#fd8d3c", marker = :rect),
-    "26Mg_pg_27Al" => (color = "#74c476", marker = :diamond),
+    "25Mg_pg_26Alg" => (color = "#00a087", marker = :ltriangle),
+    "25Mg_pg_26Alm" => (color = "#e64b35", marker = :rtriangle),
+    "26Mg_pg_27Al" => (color = "#74c476", marker = :star4),
     "26Al_pg_27Si" => (color = "#9e9ac8", marker = :utriangle),
+    "26Alg_pg_27Si" => (color = "#4dbbd5", marker = :star6),
+    "26Alm_pg_27Si" => (color = "#3c5488", marker = :star8),
     "27Al_pg_28Si" => (color = "#969696", marker = :dtriangle),
     "28Si_pg_29P" => (color = "#9ecae1", marker = :star5),
     "29Si_pg_30P" => (color = "#fdae6b", marker = :hexagon),
@@ -100,6 +104,11 @@ const MARKER_SYMBOLS = Dict(
     :cross => "+",
     :xcross => "×",
     :pentagon => "⬟",
+    :ltriangle => "◀",
+    :rtriangle => "▶",
+    :star4 => "✦",
+    :star6 => "✶",
+    :star8 => "✷",
 )
 
 struct ReactionStyleTable
