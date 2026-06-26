@@ -66,41 +66,6 @@ function prepare_base_massf(df_base::DataFrame)
     throw(ArgumentError("df_base must contain either an :X or :X_base column"))
 end
 
-function candidate_reaction_run_roots(reaction_run_path, base_path)
-    roots = [string(reaction_run_path)]
-
-    if base_path !== nothing
-        base_run_root = dirname(dirname(string(base_path)))
-        push!(roots, base_run_root)
-    end
-
-    return unique(roots)
-end
-
-function factor_file_candidates(reaction_run_path, reaction_name, factor, iso_massf_filename, base_path)
-    roots = candidate_reaction_run_roots(reaction_run_path, base_path)
-    labels = factor_directory_labels(factor)
-    candidates = String[]
-
-    for root in roots
-        for label in labels
-            for prefix in ("factor_", "fact_")
-                push!(candidates, joinpath(root, reaction_name, "$(prefix)$(label)", iso_massf_filename))
-            end
-        end
-    end
-
-    return unique(candidates)
-end
-
-function first_existing_factor_file(reaction_run_path, reaction_name, factor, iso_massf_filename, base_path)
-    candidates = factor_file_candidates(reaction_run_path, reaction_name, factor, iso_massf_filename, base_path)
-    for candidate in candidates
-        isfile(candidate) && return candidate, candidates
-    end
-    return nothing, candidates
-end
-
 function output_sensitivity_table(
     reaction_isotopes = DEFAULT_REACTION_ISOTOPES;
     reaction_run_path = "../runs",
@@ -143,17 +108,16 @@ function output_sensitivity_table(
             ratio = Union{Missing, Float64}[],
         )
 
-        for (factor, factor_label) in zip(factors, factor_labels)
-            filepath, candidates = first_existing_factor_file(
+        for factor_label in factor_labels
+            filepath = joinpath(
                 reaction_run_path,
                 reaction_name,
-                factor,
+                "fact_$(factor_label)",
                 iso_massf_filename,
-                base_path,
             )
 
-            if filepath === nothing
-                verbose && println("Missing: ", first(candidates))
+            if !isfile(filepath)
+                verbose && println("Missing: ", filepath)
                 append!(
                     df_long,
                     DataFrame(
