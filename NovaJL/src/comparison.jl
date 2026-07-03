@@ -23,7 +23,8 @@ function nova_case_paths(case_analysis_dir = pwd())
         analysis_dir = analysis_dir,
         case_dir = case_dir,
         runs_dir = joinpath(case_dir, "runs"),
-        decay_time_scan_csv = joinpath(analysis_dir, "results", "baseline_decay_checker", "decay_time_scan.csv"),
+        decay_time_scan_manifest = joinpath(case_dir, "decay_time_scan", "decay_time_scan_manifest.csv"),
+        decay_time_scan_csv = joinpath(analysis_dir, "results", "decay_time_scan_jl", "decay_time_scan.csv"),
         config_path = joinpath(case_dir, "config", "reaction_plan.json"),
         data_root = data_root,
         results_dir = joinpath(analysis_dir, "results", "iliadis_comparison_jl"),
@@ -33,15 +34,140 @@ end
 function latest_validated_decay_run(paths)
     isfile(paths.decay_time_scan_csv) || error(
         "missing $(paths.decay_time_scan_csv); run `julia tools/decay_time_scan.jl --nova <case>` " *
-        "then `python3 baseline_decay_checker.py` first",
+        "then the 00 decay-time-calibration notebook first",
     )
     df = CSV.read(paths.decay_time_scan_csv, DataFrame)
     isempty(df) && error("no rows in $(paths.decay_time_scan_csv)")
-    "output" in names(df) || error(
-        "no `output` column in $(paths.decay_time_scan_csv) — this file predates the decay-run-path " *
-        "fix in baseline_decay_checker.py; re-run `python3 baseline_decay_checker.py` to regenerate it",
-    )
+    "output" in names(df) || error("no `output` column in $(paths.decay_time_scan_csv) — re-run the 00 notebook to regenerate it")
     return String(df.output[1])
+end
+
+function isotope_z(isotope)
+    isotope == "n" && return 0
+    parts = split(isotope, "-")
+    length(parts) == 2 || error("cannot parse element symbol out of isotope label $(repr(isotope))")
+    symbol = uppercase(parts[1])
+    idx = findfirst(==(symbol), uppercase.(ELEMENT_SYMBOLS))
+    idx === nothing && error("unknown element symbol $(repr(parts[1])) in isotope label $(repr(isotope))")
+    return idx - 1
+end
+
+function read_iliadis_final_abundance(paths, model)
+    path = joinpath(paths.data_root, "ppn_final_abundances", "iso_massf_iliadis2002_final_$(model).DAT")
+    isfile(path) || error("missing Iliadis final abundance table: $path")
+    return read_iso_massf(path)
+end
+
+function compare_baseline_to_iliadis(df_ppn::DataFrame, df_iliadis::DataFrame; max_z = 20, min_reference_abundance = 1.0e-30)
+    ppn = select(df_ppn, :isotope, :X => :ppn)
+    iliadis = select(df_iliadis, :isotope, :X => :iliadis)
+    merged = innerjoin(ppn, iliadis, on = :isotope)
+    merged.z = isotope_z.(merged.isotope)
+    merged = filter(row -> row.z <= max_z && row.iliadis >= min_reference_abundance && row.ppn > 0, merged)
+
+    merged.ratio = merged.ppn ./ merged.iliadis
+    merged.log10ratio = log10.(merged.ratio)
+    merged.absdev = abs.(merged.log10ratio)
+    return sort(merged, [:z, :isotope])
+end
+
+function score_baseline(df_compare::DataFrame)
+    return DataFrame([score_group("baseline", df_compare)])
+end
+
+function plot_baseline_comparison(df_compare::DataFrame; within_10_percent = 0.1, within_factor_2 = 2.0, title = "Baseline final abundance")
+    lo = minimum(vcat(df_compare.ppn, df_compare.iliadis)) / 1.5
+    hi = maximum(vcat(df_compare.ppn, df_compare.iliadis)) * 1.5
+    xs = [lo, hi]
+
+    p = plot(
+        xscale = :log10,
+        yscale = :log10,
+        xlims = (lo, hi),
+        ylims = (lo, hi),
+        xlabel = "Iliadis (2002) final abundance",
+        ylabel = "PPN decayed final abundance",
+        title = title,
+        legend = false,
+        aspect_ratio = :equal,
+    )
+    plot!(p, xs, xs .* within_factor_2; fillrange = xs ./ within_factor_2, fillalpha = 0.18, linealpha = 0, color = :gray, label = "")
+    plot!(p, xs, xs .* (1 + within_10_percent); fillrange = xs .* (1 - within_10_percent), fillalpha = 0.25, linealpha = 0, color = :seagreen, label = "")
+    plot!(p, xs, xs; linestyle = :dash, color = :black, label = "")
+    scatter!(p, df_compare.iliadis, df_compare.ppn; label = "", markersize = 4)
+    return p
+end
+
+function decay_time_scan_results(paths; model = "JCH1", max_z = 20, min_reference_abundance = 1.0e-30, write_results = true)
+    isfile(paths.decay_time_scan_manifest) || error(
+        "missing $(paths.decay_time_scan_manifest); run `julia tools/decay_time_scan.jl --nova <case>` first",
+    )
+    manifest = CSV.read(paths.decay_time_scan_manifest, DataFrame)
+    df_iliadis = read_iliadis_final_abundance(paths, model)
+
+    rows = NamedTuple[]
+    comparisons = Dict{Float64,DataFrame}()
+    for entry in eachrow(manifest)
+        entry.status != "ok" && continue
+        df_ppn = read_iso_massf(entry.output)
+        cmp = compare_baseline_to_iliadis(df_ppn, df_iliadis; max_z = max_z, min_reference_abundance = min_reference_abundance)
+        comparisons[entry.decay_time_seconds] = cmp
+        score = score_group("baseline", cmp)
+        push!(
+            rows,
+            (
+                decay_time_seconds = entry.decay_time_seconds,
+                decay_time_label = entry.decay_time_label,
+                output = String(entry.output),
+                common_isotopes = score.common_isotopes,
+                finite_ratios = score.finite_ratios,
+                rms_log10 = score.rms_log10,
+                median_abs_log10 = score.median_abs_log10,
+                within_10_percent = score.within_10_percent,
+                within_10_percent_fraction = score.within_10_percent_fraction,
+                within_factor_2 = score.within_factor_2,
+                within_factor_2_fraction = score.within_factor_2_fraction,
+            ),
+        )
+    end
+    isempty(rows) && error("no usable decay times found in $(paths.decay_time_scan_manifest)")
+    scan = sort(DataFrame(rows), :rms_log10)
+
+    if write_results
+        mkpath(dirname(paths.decay_time_scan_csv))
+        CSV.write(paths.decay_time_scan_csv, scan)
+    end
+
+    best_time = scan.decay_time_seconds[1]
+    return (scan = scan, comparisons = comparisons, best_comparison = comparisons[best_time], best_time = best_time)
+end
+
+function plot_decay_time_scan(scan::DataFrame)
+    sorted = sort(scan, :decay_time_seconds)
+    p = plot(
+        sorted.decay_time_seconds,
+        sorted.rms_log10;
+        seriestype = :scatter,
+        xscale = :log10,
+        xlabel = "Decay time (s)",
+        ylabel = "RMS log10(PPN / Iliadis)",
+        title = "Decay time scan vs Iliadis Table 4",
+        label = "",
+        markersize = 6,
+    )
+    plot!(p, sorted.decay_time_seconds, sorted.rms_log10; label = "", color = :gray, linealpha = 0.5)
+
+    best = sort(scan, :rms_log10)[1, :]
+    scatter!(
+        p,
+        [best.decay_time_seconds],
+        [best.rms_log10];
+        label = "best: $(best.decay_time_label)",
+        markersize = 10,
+        markershape = :star5,
+        color = :red,
+    )
+    return p
 end
 
 function iliadis_isotope_to_io_style(iso)
@@ -145,9 +271,11 @@ function final_cycle_label(xtime_path)
     return lpad(string(final_cycle), 5, '0')
 end
 
-function build_ppn_table8(run_dir::AbstractString, reaction_plan; verbose = false)
-    cycle = final_cycle_label(joinpath(run_dir, "baseline", "x-time.dat"))
-    iso_massf_filename = "iso_massf$(cycle).DAT"
+function build_ppn_table8(run_dir::AbstractString, reaction_plan; verbose = false, iso_massf_filename = nothing)
+    if iso_massf_filename === nothing
+        cycle = final_cycle_label(joinpath(run_dir, "baseline", "x-time.dat"))
+        iso_massf_filename = "iso_massf$(cycle).DAT"
+    end
     base_path = joinpath(run_dir, "baseline", iso_massf_filename)
 
     reaction_isotopes = [(r.name, r.isotopes) for r in reaction_plan]
@@ -413,10 +541,14 @@ end
 
 summary_markdown_table(df::DataFrame; digits = 4) = dataframe_to_markdown(df; digits = digits)
 
-function run_iliadis_comparison(; nova = pwd(), model = "JCH1", write_results = true)
+function run_iliadis_comparison(; nova = pwd(), model = "JCH1", decay_runs_dir = nothing, write_results = true)
     paths = nova_case_paths(nova)
     reaction_plan = load_reaction_plan(paths.config_path)
-    df_ppn = build_ppn_table8(paths.runs_dir, reaction_plan)
+    if decay_runs_dir !== nothing
+        df_ppn = build_ppn_table8(decay_runs_dir, reaction_plan; iso_massf_filename = "iso_massfdecay.DAT")
+    else
+        df_ppn = build_ppn_table8(paths.runs_dir, reaction_plan)
+    end
     df_iliadis = read_iliadis_table8(paths, model)
     df_table3 = read_iliadis_table3(paths)
 
@@ -436,11 +568,12 @@ function run_iliadis_comparison(; nova = pwd(), model = "JCH1", write_results = 
     return (comparison = comparison, score = score, figure = figure, markdown_table = markdown_table, paths = paths)
 end
 
-function run_rate_set_comparison(; nova = pwd(), run_dir_a, run_dir_b, label_a = "rate_set_a", label_b = "rate_set_b", write_results = true)
+function run_rate_set_comparison(; nova = pwd(), run_dir_a, run_dir_b, label_a = "rate_set_a", label_b = "rate_set_b", use_decay = false, write_results = true)
     paths = nova_case_paths(nova)
     reaction_plan = load_reaction_plan(paths.config_path)
-    df_a = build_ppn_table8(run_dir_a, reaction_plan)
-    df_b = build_ppn_table8(run_dir_b, reaction_plan)
+    iso_fn = use_decay ? "iso_massfdecay.DAT" : nothing
+    df_a = build_ppn_table8(run_dir_a, reaction_plan; iso_massf_filename = iso_fn)
+    df_b = build_ppn_table8(run_dir_b, reaction_plan; iso_massf_filename = iso_fn)
 
     comparison = compare_ppn_rate_sets(df_a, df_b; label_a = label_a, label_b = label_b)
     score = score_comparison(comparison)

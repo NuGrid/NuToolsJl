@@ -13,6 +13,7 @@ include("utils.jl")
 include("processing.jl")
 include("plotting.jl")
 include("comparison.jl")
+include("decay_solve.jl")
 
 # -------------------------
 # EXPORTS
@@ -61,6 +62,20 @@ export read_iso_massf,
        plot_rate_set_comparison,
        run_rate_set_comparison,
        combined_score_table,
-       overall_scores
+       overall_scores,
+       isotope_z,
+       read_iliadis_final_abundance,
+       compare_baseline_to_iliadis,
+       score_baseline,
+       decay_time_scan_results,
+       plot_decay_time_scan,
+       plot_baseline_comparison,
+       NOVA_HALF_LIVES_S,
+       solve_isotope_decay_times,
+       plot_decay_time_solve,
+       decay_solve_summary,
+       solve_isotope_decay_times_analytic,
+       compare_decay_solve_methods,
+       plot_method_comparison
 
 end
