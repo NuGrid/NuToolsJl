@@ -258,10 +258,15 @@ end
 # ---------------------------------------------------------------------------
 
 # Half-lives (seconds) for unstable isotopes in the nova network (Z ≤ 20).
-# Values from NUBASE2020 (Kondev et al. 2021, Chinese Phys. C 45, 030001).
+# Values from NuDat 3.0 / NUBASE2020 (Kondev et al. 2021, Chinese Phys. C 45, 030001).
 # Isotopes not listed here are assumed stable (no analytic solution possible).
 const NOVA_HALF_LIVES_S = Dict{String,Float64}(
+    "n"     => 611.0,                         # neutron, 611.0 s
+    "H-3"   => 12.32   * 365.25 * 86400.0,   # tritium, 12.32 yr
     "BE-7"  => 53.22   * 86400.0,            # 53.22 d
+    "B-8"   => 0.7695,                        # 769.5 ms (β+ → BE-8)
+    "C-11"  => 1221.8,                        # 20.364 min
+    "C-14"  => 5730.0  * 365.25 * 86400.0,  # 5730 yr
     "N-13"  => 9.965   * 60.0,               # 9.965 min
     "O-14"  => 70.62,                         # 70.62 s
     "O-15"  => 122.24,                        # 122.24 s
@@ -275,11 +280,14 @@ const NOVA_HALF_LIVES_S = Dict{String,Float64}(
     "NA-24" => 14.997  * 3600.0,             # 14.997 h
     "MG-23" => 11.317,                        # 11.317 s
     "MG-27" => 567.5,                         # 567.5 s
+    "MG-28" => 20.915  * 3600.0,             # 20.915 h
     "AL-25" => 7.183,                         # 7.183 s
     "AL-26" => 717300.0 * 365.25 * 86400.0,  # 0.7173 Myr (ground state)
     "AL-28" => 134.4,                         # 134.4 s
     "SI-27" => 4.16,                          # 4.16 s
     "SI-31" => 9440.0,                        # 2.622 h
+    "SI-32" => 153.0   * 365.25 * 86400.0,  # 153 yr
+    "P-29"  => 4.142,                         # 4.142 s
     "P-30"  => 149.88,                        # 149.88 s
     "P-32"  => 14.268  * 86400.0,            # 14.268 d
     "P-33"  => 24.97   * 86400.0,            # 24.97 d
@@ -474,6 +482,155 @@ function compare_decay_solve_methods(
         interp_solve       = interp,
         analytic_solve     = analytic,
     )
+end
+
+"""
+    solve_decay_time_direct(paths; model, min_ppn_abundance, min_reference_abundance) -> NamedTuple
+
+Direct analytic decay-time solve using the radioactive decay law.
+
+For every radioactive isotope in `runs/baseline/iso_massf<LAST>.DAT` that has a
+known half-life in `NOVA_HALF_LIVES_S`, compute:
+
+    t_i = T½_i / ln(2) × ln(X_ppn_i / X_iliadis_i)
+
+This is the time at which the PPN pre-decay abundance X_ppn would decay down to
+match the Iliadis reference abundance X_iliadis.
+
+Flags per isotope:
+  "ok"              — valid t_i solved (X_ppn ≥ X_iliadis and isotope is in Iliadis)
+  "underproduction" — X_ppn < X_iliadis; PPN starts below the Iliadis level, so no
+                      forward-decay time can reach it
+  "not_in_iliadis"  — isotope is radioactive in PPN but Iliadis does not report it
+                      (most short-lived isotopes decay away before Iliadis' reporting epoch)
+  "iliadis_zero"    — Iliadis abundance is below the threshold
+
+Returned NamedTuple fields:
+  - `per_isotope`       — DataFrame with one row per radioactive PPN isotope
+  - `consensus_time`    — geometric mean of t_i over "ok" isotopes (seconds)
+  - `std_log10_t`       — std dev of log10(t_i) across "ok" isotopes
+  - `n_ok`              — number of isotopes with a valid solved t
+  - `n_underproduction` — isotopes where PPN underproduces vs Iliadis
+  - `n_not_in_iliadis`  — radioactive isotopes not reported in the Iliadis table
+"""
+function solve_decay_time_direct(
+    paths;
+    model = "JCH1",
+    min_ppn_abundance = 1.0e-99,
+    min_reference_abundance = 1.0e-30,
+)
+    # Read PPN baseline directly (pre-decay end-of-nova abundances)
+    cycle = final_cycle_label(joinpath(paths.runs_dir, "baseline", "x-time.dat"))
+    baseline_file = joinpath(paths.runs_dir, "baseline", "iso_massf$(cycle).DAT")
+    isfile(baseline_file) || error("missing PPN baseline: $baseline_file")
+    df_ppn = filter(r -> r.X > min_ppn_abundance, read_iso_massf(baseline_file))
+
+    df_iliadis = read_iliadis_final_abundance(paths, model)
+    ili_lookup = Dict(row.isotope => row.X for row in eachrow(df_iliadis))
+
+    rows = NamedTuple[]
+    for ppn_row in eachrow(df_ppn)
+        iso   = ppn_row.isotope
+        X_ppn = ppn_row.X
+
+        # Only process isotopes with a known T½ (stable ones are not in the table)
+        T_half = get(NOVA_HALF_LIVES_S, iso, nothing)
+        T_half === nothing && continue
+        λ = log(2.0) / T_half
+
+        X_ili = get(ili_lookup, iso, nothing)
+
+        flag, t_solved, log10_t = if X_ili === nothing
+            "not_in_iliadis", NaN, NaN
+        elseif X_ili < min_reference_abundance
+            "iliadis_zero", NaN, NaN
+        elseif X_ppn < X_ili
+            "underproduction", NaN, NaN
+        else
+            t = log(X_ppn / X_ili) / λ
+            "ok", t, log10(max(t, 1.0))
+        end
+
+        push!(rows, (
+            isotope        = iso,
+            T_half_s       = T_half,
+            T_half_label   = _format_decay_time(T_half),
+            X_ppn          = X_ppn,
+            X_iliadis      = isnothing(X_ili) ? NaN : Float64(X_ili),
+            t_solved       = t_solved,
+            log10_t_solved = log10_t,
+            flag           = flag,
+        ))
+    end
+
+    isempty(rows) && error("no radioactive isotopes with known T½ found in PPN baseline")
+    df = sort(DataFrame(rows), :isotope)
+
+    ok_rows  = filter(r -> r.flag == "ok", df)
+    log10_ok = ok_rows[!, :log10_t_solved]
+    n_ok     = length(log10_ok)
+    mean_l10 = n_ok > 0 ? sum(log10_ok) / n_ok : NaN
+    std_l10  = n_ok >= 2 ? sqrt(sum((log10_ok .- mean_l10) .^ 2) / (n_ok - 1)) : NaN
+
+    return (
+        per_isotope       = df,
+        consensus_time    = isfinite(mean_l10) ? 10^mean_l10 : NaN,
+        std_log10_t       = std_l10,
+        n_ok              = length(log10_ok),
+        n_underproduction = sum(r -> r.flag == "underproduction", eachrow(df)),
+        n_not_in_iliadis  = sum(r -> r.flag == "not_in_iliadis",  eachrow(df)),
+    )
+end
+
+"""
+    plot_decay_time_direct(result; title) -> Plot
+
+Scatter plot of t_i per isotope from `solve_decay_time_direct`, with the
+geometric-mean consensus time and ±1σ band overlaid.
+Only "ok" isotopes are plotted; counts for other flags appear in the subtitle.
+"""
+function plot_decay_time_direct(result; title = "Per-isotope solved decay time (decay law)")
+    df_ok = filter(r -> r.flag == "ok" && isfinite(r.log10_t_solved), result.per_isotope)
+    isempty(df_ok) && error("no isotopes with valid solved decay time to plot")
+
+    t_consensus = result.consensus_time
+    std_log10   = result.std_log10_t
+    n_miss       = result.n_not_in_iliadis
+    n_under      = result.n_underproduction
+
+    parts = String[]
+    n_miss  > 0 && push!(parts, "$n_miss not in Iliadis")
+    n_under > 0 && push!(parts, "$n_under underproduced")
+    subtitle = isempty(parts) ? "" : " (" * join(parts, ", ") * ")"
+
+    p = scatter(
+        df_ok.isotope,
+        df_ok.t_solved;
+        yscale     = :log10,
+        xlabel     = "Isotope",
+        ylabel     = "Solved decay time (s)",
+        title      = title * subtitle,
+        label      = "t_i (decay law)",
+        markersize = 6,
+        xrotation  = 45,
+    )
+
+    if isfinite(t_consensus)
+        hline!(
+            p, [t_consensus];
+            label     = "Consensus: $(_format_decay_time(t_consensus))",
+            linestyle = :dash,
+            color     = :red,
+            linewidth = 2,
+        )
+        if isfinite(std_log10)
+            t_lo = 10^(log10(t_consensus) - std_log10)
+            t_hi = 10^(log10(t_consensus) + std_log10)
+            hline!(p, [t_lo, t_hi]; label = "±1σ (log₁₀)", linestyle = :dot, color = :orange, linewidth = 1.5)
+        end
+    end
+
+    return p
 end
 
 """

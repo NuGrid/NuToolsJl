@@ -143,7 +143,7 @@ function decay_time_scan_results(paths; model = "JCH1", max_z = 20, min_referenc
 end
 
 function plot_decay_time_scan(scan::DataFrame)
-    sorted = sort(scan, :decay_time_seconds)
+    sorted = filter(r -> r.decay_time_seconds > 0, sort(scan, :decay_time_seconds))
     p = plot(
         sorted.decay_time_seconds,
         sorted.rms_log10;

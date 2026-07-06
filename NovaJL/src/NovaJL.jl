@@ -76,6 +76,8 @@ export read_iso_massf,
        decay_solve_summary,
        solve_isotope_decay_times_analytic,
        compare_decay_solve_methods,
-       plot_method_comparison
+       plot_method_comparison,
+       solve_decay_time_direct,
+       plot_decay_time_direct
 
 end
