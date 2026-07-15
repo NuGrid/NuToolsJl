@@ -19,6 +19,7 @@ include("decay_solve.jl")
 # EXPORTS
 # -------------------------
 export read_iso_massf,
+       read_iniab,
        read_trajectory,
        factor_to_folder,
        dots_to_missing!,
@@ -60,6 +61,10 @@ export read_iso_massf,
        run_iliadis_comparison,
        compare_ppn_rate_sets,
        plot_rate_set_comparison,
+       plot_sensitivity_table,
+       run_sensitivity,
+       sensitive_reactions,
+       sensitivity_summary,
        run_rate_set_comparison,
        combined_score_table,
        overall_scores,
@@ -78,6 +83,11 @@ export read_iso_massf,
        compare_decay_solve_methods,
        plot_method_comparison,
        solve_decay_time_direct,
-       plot_decay_time_direct
+       plot_decay_time_direct,
+       plot_abundance_ratio,
+       iliadis_sensitivity_summary,
+       compare_sensitive_lists,
+       regression_log10,
+       sensitivity_agreement_score
 
 end

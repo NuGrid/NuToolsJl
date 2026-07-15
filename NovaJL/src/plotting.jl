@@ -1,6 +1,8 @@
 using Plots
 import CairoMakie as CM
 
+CM.set_theme!(CM.theme_latexfonts())
+
 const ELEMENT_SYMBOLS = [
     "n", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
     "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
