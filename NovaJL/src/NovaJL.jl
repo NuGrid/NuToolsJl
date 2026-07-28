@@ -88,6 +88,8 @@ export read_iso_massf,
        iliadis_sensitivity_summary,
        compare_sensitive_lists,
        regression_log10,
-       sensitivity_agreement_score
+       sensitivity_agreement_score,
+       compare_ppn_runs,
+       plot_ppn_comparison
 
 end

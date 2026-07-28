@@ -86,22 +86,21 @@ function plot_baseline_comparison(df_compare::DataFrame;
     hi = maximum(vcat(df_compare.ppn, df_compare.iliadis)) * 1.5
     xs = [lo, hi]
 
-    p = plot(
-        xscale = :log10,
-        yscale = :log10,
-        xlims = (lo, hi),
-        ylims = (lo, hi),
+    fig = CM.Figure(size = (500, 500))
+    ax  = CM.Axis(fig[1, 1];
+        xscale = log10,
+        yscale = log10,
         xlabel = xlabel,
         ylabel = ylabel,
-        title = title,
-        legend = false,
-        aspect_ratio = :equal,
+        title  = title,
+        aspect = CM.DataAspect(),
     )
-    plot!(p, xs, xs .* within_factor_2; fillrange = xs ./ within_factor_2, fillalpha = 0.18, linealpha = 0, color = :gray, label = "")
-    plot!(p, xs, xs .* (1 + within_10_percent); fillrange = xs .* (1 - within_10_percent), fillalpha = 0.25, linealpha = 0, color = :seagreen, label = "")
-    plot!(p, xs, xs; linestyle = :dash, color = :black, label = "")
-    scatter!(p, df_compare.iliadis, df_compare.ppn; label = "", markersize = 4)
-    return p
+    CM.band!(ax, xs, xs ./ within_factor_2,         xs .* within_factor_2;         color = (:gray,     0.18))
+    CM.band!(ax, xs, xs .* (1 - within_10_percent), xs .* (1 + within_10_percent); color = (:seagreen, 0.25))
+    CM.lines!(ax, xs, xs; linestyle = :dash, color = :black)
+    CM.scatter!(ax, df_compare.iliadis, df_compare.ppn; markersize = 8, color = :steelblue)
+    CM.limits!(ax, lo, hi, lo, hi)
+    return fig
 end
 
 function decay_time_scan_results(paths; model = "JCH1", max_z = 20, min_reference_abundance = 1.0e-30, write_results = true)
@@ -150,30 +149,22 @@ end
 
 function plot_decay_time_scan(scan::DataFrame)
     sorted = filter(r -> r.decay_time_seconds > 0, sort(scan, :decay_time_seconds))
-    p = plot(
-        sorted.decay_time_seconds,
-        sorted.rms_log10;
-        seriestype = :scatter,
-        xscale = :log10,
-        xlabel = "Decay time (s)",
-        ylabel = "RMS log10(PPN / Iliadis)",
-        title = "Decay time scan vs Iliadis Table 4",
-        label = "",
-        markersize = 6,
-    )
-    plot!(p, sorted.decay_time_seconds, sorted.rms_log10; label = "", color = :gray, linealpha = 0.5)
+    best   = sort(scan, :rms_log10)[1, :]
 
-    best = sort(scan, :rms_log10)[1, :]
-    scatter!(
-        p,
-        [best.decay_time_seconds],
-        [best.rms_log10];
-        label = "best: $(best.decay_time_label)",
-        markersize = 10,
-        markershape = :star5,
-        color = :red,
+    fig = CM.Figure()
+    ax  = CM.Axis(fig[1, 1];
+        xscale = log10,
+        xlabel = "Decay time (s)",
+        ylabel = "RMS log₁₀(PPN / Iliadis)",
+        title  = "Decay time scan vs Iliadis Table 4",
     )
-    return p
+    CM.lines!(ax,   sorted.decay_time_seconds, sorted.rms_log10; color = (:gray, 0.5))
+    CM.scatter!(ax, sorted.decay_time_seconds, sorted.rms_log10; markersize = 8, color = :steelblue)
+    CM.scatter!(ax, [best.decay_time_seconds], [best.rms_log10];
+        markersize = 14, marker = :star5, color = :red,
+        label = "best: $(best.decay_time_label)")
+    CM.axislegend(ax; position = :rt)
+    return fig
 end
 
 function iliadis_isotope_to_io_style(iso)
@@ -760,21 +751,82 @@ function plot_abundance_ratio(df_compare::DataFrame;
     )
     cmp = sort(df_compare, :z)
     n   = nrow(cmp)
+    xs  = 1:n
 
-    p = plot(
-        xticks        = (1:n, cmp.isotope),
-        xrotation     = 55,
-        ylabel        = "X_PPN / X_Iliadis",
-        yscale        = :log10,
-        title         = title,
-        legend        = false,
-        bottom_margin = 8Plots.mm,
+    fig = CM.Figure(size = (max(600, 28 * n), 420))
+    ax  = CM.Axis(fig[1, 1];
+        yscale             = log10,
+        ylabel             = "X_PPN / X_Iliadis",
+        title              = title,
+        xticks             = (xs, cmp.isotope),
+        xticklabelrotation = π / 3,
     )
-    hline!(p, [within_factor_2, 1.0 / within_factor_2]; linestyle = :dot, color = :gray,     linewidth = 1.5, label = "")
-    hline!(p, [1 + within_10_percent, 1 - within_10_percent]; linestyle = :dot, color = :seagreen, linewidth = 1.5, label = "")
-    hline!(p, [1.0]; linestyle = :dash, color = :black, linewidth = 1, label = "")
-    scatter!(p, 1:n, cmp.ratio; markersize = 5, color = :steelblue, label = "")
-    return p
+    CM.hlines!(ax, [within_factor_2, 1.0 / within_factor_2];
+        linestyle = :dot,  color = :gray,     linewidth = 1.5)
+    CM.hlines!(ax, [1 + within_10_percent, 1 - within_10_percent];
+        linestyle = :dot,  color = :seagreen, linewidth = 1.5)
+    CM.hlines!(ax, [1.0];
+        linestyle = :dash, color = :black,    linewidth = 1)
+    CM.scatter!(ax, collect(xs), cmp.ratio; markersize = 10, color = :steelblue)
+    return fig
+end
+
+# Compare PPN final abundances from two runs at their respective best decay times.
+# Both df_a and df_b are `best_comparison` DataFrames from decay_time_scan_results,
+# each with columns :isotope, :ppn, :iliadis, :z.
+# Returns a DataFrame sorted by absolute log10 deviation between the two runs.
+function compare_ppn_runs(df_a::DataFrame, df_b::DataFrame;
+    label_a = "run A",
+    label_b = "run B",
+)
+    joined = innerjoin(
+        select(df_a, :isotope, :ppn => :ppn_a, :z),
+        select(df_b, :isotope, :ppn => :ppn_b),
+        on = :isotope,
+    )
+    sort!(joined, :z)
+    joined.ratio       = joined.ppn_b ./ joined.ppn_a
+    joined.log10_ratio = log10.(joined.ratio)
+    joined.abs_log10   = abs.(joined.log10_ratio)
+    result = rename(select(joined, :isotope, :ppn_a, :ppn_b, :ratio, :log10_ratio, :abs_log10),
+        :ppn_a => Symbol(label_a), :ppn_b => Symbol(label_b))
+    return sort(result, :abs_log10; rev = true)
+end
+
+function plot_ppn_comparison(df_a::DataFrame, df_b::DataFrame;
+    label_a           = "run A",
+    label_b           = "run B",
+    title             = nothing,
+    within_factor_2   = 2.0,
+    within_10_percent = 0.1,
+)
+    joined = innerjoin(
+        select(df_a, :isotope, :ppn => :ppn_a, :z),
+        select(df_b, :isotope, :ppn => :ppn_b),
+        on = :isotope,
+    )
+    sort!(joined, :z)
+    joined.ratio = joined.ppn_b ./ joined.ppn_a
+    n   = nrow(joined)
+    xs  = 1:n
+    ttl = isnothing(title) ? "X ($label_b) / X ($label_a)" : title
+
+    fig = CM.Figure(size = (max(600, 28 * n), 420))
+    ax  = CM.Axis(fig[1, 1];
+        yscale             = log10,
+        ylabel             = "$label_b / $label_a",
+        title              = ttl,
+        xticks             = (xs, joined.isotope),
+        xticklabelrotation = π / 3,
+    )
+    CM.hlines!(ax, [within_factor_2, 1.0 / within_factor_2];
+        linestyle = :dot,  color = :gray,     linewidth = 1.5)
+    CM.hlines!(ax, [1 + within_10_percent, 1 - within_10_percent];
+        linestyle = :dot,  color = :seagreen, linewidth = 1.5)
+    CM.hlines!(ax, [1.0];
+        linestyle = :dash, color = :black,    linewidth = 1)
+    CM.scatter!(ax, collect(xs), joined.ratio; markersize = 10, color = :steelblue)
+    return fig
 end
 
 # Per-reaction summary of what Iliadis found sensitive in Table 8, sorted by min_effective_factor.

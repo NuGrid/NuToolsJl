@@ -485,39 +485,39 @@ function compare_decay_solve_methods(
 end
 
 """
-    solve_decay_time_direct(paths; model, min_ppn_abundance, min_reference_abundance) -> NamedTuple
+    solve_decay_time_direct(paths; model, min_ppn_abundance, max_halflife_s) -> NamedTuple
 
 Direct analytic decay-time solve using the radioactive decay law.
 
 For every radioactive isotope in `runs/baseline/iso_massf<LAST>.DAT` that has a
-known half-life in `NOVA_HALF_LIVES_S`, compute:
+known half-life in `NOVA_HALF_LIVES_S` and T½ ≤ `max_halflife_s` (default 86400 s
+= 1 day), compute:
 
     t_i = T½_i / ln(2) × ln(X_ppn_i / X_iliadis_i)
 
-This is the time at which the PPN pre-decay abundance X_ppn would decay down to
-match the Iliadis reference abundance X_iliadis.
+Long-lived isotopes (T½ > 1 day, e.g. NA-22, AL-26, BE-7) are silently excluded:
+they barely decay on nova timescales so their t_i is set by the abundance ratio,
+not by nova timing.
 
 Flags per isotope:
-  "ok"              — valid t_i solved (X_ppn ≥ X_iliadis and isotope is in Iliadis)
-  "underproduction" — X_ppn < X_iliadis; PPN starts below the Iliadis level, so no
-                      forward-decay time can reach it
-  "not_in_iliadis"  — isotope is radioactive in PPN but Iliadis does not report it
-                      (most short-lived isotopes decay away before Iliadis' reporting epoch)
-  "iliadis_zero"    — Iliadis abundance is below the threshold
+  "ok"              — valid t_i solved
+  "not_in_iliadis"  — isotope not present in the Iliadis reference table
+  "underproduction" — X_ppn < X_iliadis; no forward-decay solution
+  "iliadis_zero"    — Iliadis abundance effectively zero
 
 Returned NamedTuple fields:
-  - `per_isotope`       — DataFrame with one row per radioactive PPN isotope
+  - `per_isotope`       — DataFrame with one row per short-lived radioactive PPN isotope
   - `consensus_time`    — geometric mean of t_i over "ok" isotopes (seconds)
   - `std_log10_t`       — std dev of log10(t_i) across "ok" isotopes
-  - `n_ok`              — number of isotopes with a valid solved t
+  - `n_ok`              — isotopes with a valid solved t
   - `n_underproduction` — isotopes where PPN underproduces vs Iliadis
-  - `n_not_in_iliadis`  — radioactive isotopes not reported in the Iliadis table
+  - `n_not_in_iliadis`  — radioactive isotopes absent from the Iliadis table
 """
 function solve_decay_time_direct(
     paths;
     model = "JCH1",
     min_ppn_abundance = 1.0e-99,
-    min_reference_abundance = 1.0e-30,
+    max_halflife_s = 86400.0,
 )
     # Read PPN baseline directly (pre-decay end-of-nova abundances)
     cycle = final_cycle_label(joinpath(paths.runs_dir, "baseline", "x-time.dat"))
@@ -533,21 +533,37 @@ function solve_decay_time_direct(
         iso   = ppn_row.isotope
         X_ppn = ppn_row.X
 
-        # Only process isotopes with a known T½ (stable ones are not in the table)
         T_half = get(NOVA_HALF_LIVES_S, iso, nothing)
         T_half === nothing && continue
+        # Skip long-lived isotopes — they don't inform nova decay timing.
+        T_half > max_halflife_s && continue
         λ = log(2.0) / T_half
 
-        X_ili = get(ili_lookup, iso, nothing)
+        # Distinguish "not in Iliadis table" from "abundance effectively zero".
+        X_ili_opt = get(ili_lookup, iso, nothing)
+        if X_ili_opt === nothing
+            push!(rows, (
+                isotope        = iso,
+                T_half_s       = T_half,
+                T_half_label   = _format_decay_time(T_half),
+                X_ppn          = X_ppn,
+                X_iliadis      = 0.0,
+                t_solved       = NaN,
+                log10_t_solved = NaN,
+                flag           = "not_in_iliadis",
+            ))
+            continue
+        end
 
-        flag, t_solved, log10_t = if X_ili === nothing
-            "not_in_iliadis", NaN, NaN
-        elseif X_ili < min_reference_abundance
+        X_ili_raw = Float64(X_ili_opt)
+        X_ili_eff = max(X_ili_raw, 1.0e-99)
+
+        flag, t_solved, log10_t = if X_ili_eff < 1.0e-98
             "iliadis_zero", NaN, NaN
-        elseif X_ppn < X_ili
+        elseif X_ppn < X_ili_eff
             "underproduction", NaN, NaN
         else
-            t = log(X_ppn / X_ili) / λ
+            t = log(X_ppn / X_ili_eff) / λ
             "ok", t, log10(max(t, 1.0))
         end
 
@@ -556,7 +572,7 @@ function solve_decay_time_direct(
             T_half_s       = T_half,
             T_half_label   = _format_decay_time(T_half),
             X_ppn          = X_ppn,
-            X_iliadis      = isnothing(X_ili) ? NaN : Float64(X_ili),
+            X_iliadis      = X_ili_raw,
             t_solved       = t_solved,
             log10_t_solved = log10_t,
             flag           = flag,
@@ -576,7 +592,7 @@ function solve_decay_time_direct(
         per_isotope       = df,
         consensus_time    = isfinite(mean_l10) ? 10^mean_l10 : NaN,
         std_log10_t       = std_l10,
-        n_ok              = length(log10_ok),
+        n_ok              = n_ok,
         n_underproduction = sum(r -> r.flag == "underproduction", eachrow(df)),
         n_not_in_iliadis  = sum(r -> r.flag == "not_in_iliadis",  eachrow(df)),
     )
@@ -595,13 +611,9 @@ function plot_decay_time_direct(result; title = "Per-isotope solved decay time (
 
     t_consensus = result.consensus_time
     std_log10   = result.std_log10_t
-    n_miss       = result.n_not_in_iliadis
-    n_under      = result.n_underproduction
+    n_under     = result.n_underproduction
 
-    parts = String[]
-    n_miss  > 0 && push!(parts, "$n_miss not in Iliadis")
-    n_under > 0 && push!(parts, "$n_under underproduced")
-    subtitle = isempty(parts) ? "" : " (" * join(parts, ", ") * ")"
+    subtitle = n_under > 0 ? " ($n_under underproduced)" : ""
 
     p = scatter(
         df_ok.isotope,
