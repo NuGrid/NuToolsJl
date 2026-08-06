@@ -1,3 +1,32 @@
+# Read the iniab_*.dat initial-abundance format: "Z  element  A  value"
+# (or "Z  PROT  value" for protons). Returns the same DataFrame shape as read_iso_massf.
+function read_iniab(filepath)
+    isotopes = String[]
+    values   = Float64[]
+    for line in eachline(filepath)
+        line = strip(line)
+        isempty(line) && continue
+        startswith(line, "#") && continue
+        parts = split(line)
+        length(parts) < 3 && continue
+        try
+            parse(Float64, parts[1])  # first token must be Z (numeric)
+        catch
+            continue
+        end
+        if uppercase(parts[2]) == "PROT"
+            push!(isotopes, "H-1")
+            push!(values,   parse(Float64, parts[3]))
+        elseif length(parts) >= 4
+            elem = uppercase(parts[2])
+            A    = parts[3]
+            push!(isotopes, "$(elem)-$(A)")
+            push!(values,   parse(Float64, parts[4]))
+        end
+    end
+    return DataFrame(isotope = isotopes, X = values)
+end
+
 function read_iso_massf(filepath)
     isotopes = String[]
     values = Float64[]

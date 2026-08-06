@@ -1,6 +1,8 @@
 using Plots
 import CairoMakie as CM
 
+CM.set_theme!(CM.theme_latexfonts())
+
 const ELEMENT_SYMBOLS = [
     "n", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
     "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
@@ -1966,6 +1968,101 @@ function flow_region_chart(
         colormap = colormap,
         colorrange = color_limits,
         label = "log10(flux)",
+    )
+
+    return fig
+end
+
+function _isotope_mass_number(iso::AbstractString)
+    parts = split(iso, "-")
+    length(parts) != 2 && return nothing
+    return tryparse(Int, parts[2])
+end
+
+# Nuclear-chart heatmap coloured by log₁₀(ratio), with a diverging blue→white→red colormap
+# centred at log₁₀(1) = 0.  color_range sets the ±symmetric clip (default ±2 = factor 100).
+# Expects a DataFrame with columns :isotope ("HE-4" / "He-4" format), :z (atomic number),
+# and a ratio column (default :ratio, linear values > 0).
+function ratio_chart(
+    df::DataFrame;
+    ratio_col          = :ratio,
+    isotope_col        = :isotope,
+    z_col              = :z,
+    element_limit      = "Ca",
+    color_range        = 2.0,
+    title              = "Abundance ratio chart",
+    figure_size        = (950, 650),
+    element_label_size = 16,
+    mass_label_size    = 8,
+    colorbar_label     = "log₁₀(ratio)",
+)
+    max_z  = element_z(element_limit)
+    cg     = CM.cgrad([:steelblue, :white, :firebrick])
+
+    N_vals  = Int[]
+    Z_vals  = Int[]
+    A_vals  = Int[]
+    lr_vals = Float64[]
+
+    for row in eachrow(df)
+        z = row[z_col]
+        (z < 1 || z > max_z) && continue
+        A = _isotope_mass_number(string(row[isotope_col]))
+        (A === nothing || A <= 0) && continue
+        r = row[ratio_col]
+        r > 0 || continue
+        push!(Z_vals, z)
+        push!(A_vals, A)
+        push!(N_vals, A - z)
+        push!(lr_vals, log10(r))
+    end
+
+    isempty(N_vals) && error("ratio_chart: no valid isotopes found (check element_limit and ratio values)")
+
+    min_n = minimum(N_vals)
+    max_n = maximum(N_vals)
+
+    fig = CM.Figure(size = figure_size)
+    ax  = CM.Axis(
+        fig[1, 1];
+        xlabel       = "neutron number (A−Z)",
+        ylabel       = "proton number (Z)",
+        title        = title,
+        aspect       = CM.DataAspect(),
+        xgridvisible = false,
+        ygridvisible = false,
+        xticks       = min_n:max_n,
+        yticks       = 0:2:max_z,
+        limits       = (min_n - 3.0, max_n + 1.0, -0.5, max_z + 1.0),
+    )
+
+    for (n, z, a, lr) in zip(N_vals, Z_vals, A_vals, lr_vals)
+        fraction   = clamp((lr + color_range) / (2 * color_range), 0.0, 1.0)
+        tile_color = cg[fraction]
+        corners    = CM.Point2f[
+            (n - 0.5, z - 0.5), (n + 0.5, z - 0.5),
+            (n + 0.5, z + 0.5), (n - 0.5, z + 0.5),
+        ]
+        CM.poly!(ax, corners; color = tile_color, strokecolor = :black, strokewidth = 1)
+        CM.text!(ax, string(a);
+            position = (n, z), align = (:center, :center),
+            fontsize = mass_label_size, color = :black,
+        )
+    end
+
+    for z in 1:max_z
+        idxs   = findall(==(z), Z_vals)
+        n_left = isempty(idxs) ? min_n - 1.5 : minimum(N_vals[idxs]) - 0.75
+        CM.text!(ax, element_symbol(z);
+            position = (n_left, z), align = (:right, :center),
+            fontsize = element_label_size, font = :bold, color = :black,
+        )
+    end
+
+    CM.Colorbar(fig[1, 2];
+        colormap   = cg,
+        colorrange = (-color_range, color_range),
+        label      = colorbar_label,
     )
 
     return fig
