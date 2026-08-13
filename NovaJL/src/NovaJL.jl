@@ -94,6 +94,7 @@ export read_iso_massf,
        ratio_chart,
        is_nova_important_isotope,
        nova_iliadis_sensitivity,
-       nova_ppn_sensitivity
+       nova_ppn_sensitivity,
+       save_table
 
 end

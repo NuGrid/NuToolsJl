@@ -199,6 +199,7 @@ function load_reaction_plan(path)
                 index = get(reaction, "index", missing),
                 product_was_remapped = get(reaction, "product_was_remapped", false),
                 notes = join(string.(notes), "; "),
+                source = String(get(reaction, "source", "")),
             ),
         )
     end
@@ -673,6 +674,14 @@ end
 
 summary_markdown_table(df::DataFrame; digits = 4) = dataframe_to_markdown(df; digits = digits)
 
+# Save a DataFrame to CSV and return it, so it can be chained with display calls.
+# Example: save_table(df_ili_nova, "results/ili_nova_sensitivity.csv") |> dataframe_to_html
+function save_table(df::DataFrame, path::AbstractString)
+    mkpath(dirname(path))
+    CSV.write(path, df)
+    return df
+end
+
 function run_iliadis_comparison(; nova = pwd(), model = "JCH1", decay_runs_dir = nothing, write_results = true)
     paths = nova_case_paths(nova)
     reaction_plan = load_reaction_plan(paths.config_path)
@@ -929,6 +938,9 @@ function nova_iliadis_sensitivity(paths, model = "JCH1")
     ]
     factor_labels = ["×100", "×10", "×2", "×0.5", "×0.1", "×0.01"]
 
+    reaction_plan = load_reaction_plan(paths.config_path)
+    source_lookup = Dict(r.name => r.source for r in reaction_plan)
+
     rows = NamedTuple[]
     for rxn_df in groupby(df, :reaction)
         rxn       = first(rxn_df.reaction)
@@ -962,11 +974,12 @@ function nova_iliadis_sensitivity(paths, model = "JCH1")
         end
 
         isempty(flagged) && continue
-        above2       = join([factor_labels[i] for i in eachindex(factor_cols) if factor_max[i] > 2.0], ", ")
+        above2        = join([factor_labels[i] for i in eachindex(factor_cols) if factor_max[i] > 2.0], ", ")
         factor_ratios = join(["$(factor_labels[i]):$(round(factor_max[i]; digits=2))" for i in eachindex(factor_cols)], ", ")
         push!(rows, (
             reaction             = rxn,
             article_reaction     = rxn_label,
+            source               = get(source_lookup, rxn, ""),
             n_isotopes           = length(flagged),
             min_effective_factor = round(min_input_factor; digits = 1),
             max_effective_ratio  = round(max_ratio; digits = 2),
@@ -978,10 +991,10 @@ function nova_iliadis_sensitivity(paths, model = "JCH1")
     end
 
     isempty(rows) && return DataFrame(
-        reaction = String[], article_reaction = String[], n_isotopes = Int[],
-        min_effective_factor = Float64[], max_effective_ratio = Float64[],
-        worst_isotope = String[], affected_isotopes = String[],
-        factors_above_2 = String[], factor_ratios = String[],
+        reaction = String[], article_reaction = String[], source = String[],
+        n_isotopes = Int[], min_effective_factor = Float64[],
+        max_effective_ratio = Float64[], worst_isotope = String[],
+        affected_isotopes = String[], factors_above_2 = String[], factor_ratios = String[],
     )
     return sort(DataFrame(rows), :max_effective_ratio; rev = true)
 end
@@ -989,7 +1002,8 @@ end
 # Same criterion applied to PPN sensitivity table (from run_sensitivity).
 # df_wide: wide-format DataFrame with columns reaction, isotope, "100.0", "10.0", "2.0", ...
 # Values are X_factor / X_ref.  Flags any nova-important isotope with val > 2.
-function nova_ppn_sensitivity(df_wide::DataFrame)
+# Pass paths to include the rate source from the reaction plan.
+function nova_ppn_sensitivity(df_wide::DataFrame, paths = nothing)
     all_cols    = names(df_wide)
     factor_cols = filter(c -> c ∉ ("reaction", "isotope"), all_cols)
     isempty(factor_cols) && error("nova_ppn_sensitivity: no factor columns found in df_wide")
@@ -1001,6 +1015,13 @@ function nova_ppn_sensitivity(df_wide::DataFrame)
         isinteger(fv) ? "×$(Int(fv))" : "×$(fv)"
     end
     factor_labels = [_factor_label(c) for c in factor_cols]
+
+    source_lookup = if paths !== nothing
+        rp = load_reaction_plan(paths.config_path)
+        Dict(r.name => r.source for r in rp)
+    else
+        Dict{String,String}()
+    end
 
     rows = NamedTuple[]
     for rxn_df in groupby(df_wide, :reaction)
@@ -1039,6 +1060,7 @@ function nova_ppn_sensitivity(df_wide::DataFrame)
         factor_ratios = join(["$(factor_labels[i]):$(round(factor_max[i]; digits=2))" for i in eachindex(factor_cols)], ", ")
         push!(rows, (
             reaction             = rxn,
+            source               = get(source_lookup, rxn, ""),
             n_isotopes           = length(flagged),
             min_effective_factor = round(min_input_factor; digits = 1),
             max_effective_ratio  = round(max_ratio; digits = 2),
@@ -1050,7 +1072,7 @@ function nova_ppn_sensitivity(df_wide::DataFrame)
     end
 
     isempty(rows) && return DataFrame(
-        reaction = String[], n_isotopes = Int[],
+        reaction = String[], source = String[], n_isotopes = Int[],
         min_effective_factor = Float64[], max_effective_ratio = Float64[],
         worst_isotope = String[], affected_isotopes = String[],
         factors_above_2 = String[], factor_ratios = String[],
