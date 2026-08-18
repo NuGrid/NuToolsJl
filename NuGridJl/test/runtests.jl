@@ -194,6 +194,108 @@ end
     @test_throws ArgumentError PPNEnsemble(joinpath(DATA, "no-such-ensemble-dir"))
 end
 
+@testset "npdata" begin
+    test_reaction = Reaction(1, true, [Isotope(1, 1, 0), Isotope(6, 12, 0)], [Isotope(7, 13, 0)],
+                              "(p,g)", "NACRR", 1.0, 1.0, 1.943, 4)
+    npdata_root = joinpath(DATA, "npdata_test")
+
+    @test reaclib_species(Isotope(1, 1, 0)) == "p"
+    @test reaclib_species(Isotope(0, 1, 0)) == "n"
+    @test reaclib_species(Isotope(6, 12, 0)) == "c12"
+
+    # the decoy file matches the winvn skip-pattern and carries a rate=1 block
+    # for the same reaction; if it weren't skipped, this test would see two
+    # (label, file) groups instead of one and the wrong rate.
+    curves = rate_curve(test_reaction, npdata_root)
+    @test Set(curves.file) == Set(["synthetic_reaclib.txt"])
+    @test all(curves.rate .≈ exp(10.0))
+    @test all(curves.label .== "nacrr")
+    @test all(curves.qvalue .== 1.943)
+
+    # explicit `files` bypasses the skip filter
+    curves_all = rate_curve(test_reaction, npdata_root; files = ["synthetic_reaclib.txt", "winvn_decoy.dat"])
+    @test Set(curves_all.file) == Set(["synthetic_reaclib.txt", "winvn_decoy.dat"])
+
+    no_match = Reaction(2, true, [Isotope(2, 4, 0)], [Isotope(6, 12, 0)], "(a,g)", "X", 1.0, 1.0, 0.0, 3)
+    @test_throws ArgumentError rate_curve(no_match, npdata_root)
+
+    fig = rate_plot(test_reaction, npdata_root)
+    @test fig isa CM.Figure
+
+    @test reaclib_rate((10.0, 0, 0, 0, 0, 0, 0), 1.0) ≈ exp(10.0)
+    @test_throws DomainError reaclib_rate((0.0, 0, 0, 0, 0, 0, 0), -1.0)
+end
+
+@testset "tables" begin
+    df = DataFrame(reaction = ["a", "b"], ratio = [1.23456, missing])
+    md = dataframe_to_markdown(df)
+    @test occursin("| reaction | ratio |", md)
+    @test occursin("1.2346", md)  # rounded to 4 digits
+
+    html = dataframe_to_html(df)
+    @test html isa RenderedHTML
+    @test occursin("<table>", html.html)
+    @test occursin("1.2346", html.html)
+
+    out_path = joinpath(mktempdir(), "table.csv")
+    result = save_table(df, out_path)
+    @test result === df
+    @test isfile(out_path)
+end
+
+@testset "sensitivity_iliadis" begin
+    sweep = PPNSweep(joinpath(DATA, "sweep"))
+
+    sens = sensitivity(sweep, "13N_pg_14O", "He-4")
+    @test sens[0.5] ≈ 0.2 / 0.315401
+    @test sens[2.0] ≈ 0.45 / 0.315401
+
+    table = sensitivity_table(sweep, "He-4")
+    @test nrow(table) == 2
+    @test Set(table.factor) == Set([0.5, 2.0])
+    @test all(==("13N_pg_14O"), table.reaction)
+    @test all(==("He-4"), table.isotope)
+
+    wide = iliadis_table(sweep, "He-4")
+    @test nrow(wide) == 1
+    @test Set(names(wide)) == Set(["reaction", "isotope", "0.5", "2.0"])
+
+    ranked = rank_reactions(table, "He-4")
+    @test ranked.reaction == ["13N_pg_14O"]
+    @test ranked.score[1] ≈ maximum(abs.(log10.([0.2 / 0.315401, 0.45 / 0.315401])))
+    @test_throws ArgumentError rank_reactions(table, "He-4"; metric = :bogus)
+    @test_throws ArgumentError rank_reactions(table, "C-12")  # not in this table
+
+    fig = sensitivity_plot(sweep, "13N_pg_14O", "He-4")
+    @test fig isa CM.Figure
+end
+
+@testset "reaction_report" begin
+    run = PPNRun(NUPPN)
+
+    flux_list = flux_reaction_list(run; cycle = :final)
+    @test nrow(flux_list) > 0
+    @test issorted(flux_list.flux; rev = true)
+    @test all(flux_list.flux .>= 1e-60)
+    @test Set(names(flux_list)) == Set(["index", "reaction", "source", "rtype", "active", "flux", "rate"])
+
+    tight_list = flux_reaction_list(run; cycle = :final, threshold = 1.0)  # nothing should pass
+    @test nrow(tight_list) == 0
+
+    sweep = PPNSweep(joinpath(DATA, "sweep"))
+    table = sensitivity_table(sweep, "He-4")
+    report = sensitivity_reaction_report(table)
+    @test nrow(report) == 1
+    @test report.reaction[1] == "13N_pg_14O"
+    @test report.n_factors[1] == 2
+    @test report.n_isotopes[1] == 1
+    @test report.worst_isotope[1] == "He-4"
+    @test report.sensitive[1] == true  # ratios of ~0.634/~1.427 give |log10| up to ~0.2, above default threshold=0.1
+
+    strict_report = sensitivity_reaction_report(table; threshold = 10.0)
+    @test strict_report.sensitive[1] == false
+end
+
 @testset "charts smoke test" begin
     run = PPNRun(NUPPN)
 
