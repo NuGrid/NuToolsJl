@@ -1,0 +1,7 @@
+# synthetic trajectory fixture for read_trajectory tests (base units: SEC/T9K/CGS)
+AGEUNIT = SEC
+TUNIT = T9K
+RHOUNIT = CGS
+0.0 0.20 100.0
+1.0 0.15 90.0
+2.0 0.10 80.0

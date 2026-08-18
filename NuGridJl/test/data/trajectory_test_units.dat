@@ -1,0 +1,6 @@
+# synthetic trajectory fixture for read_trajectory unit-conversion tests (YRS/T8K/LOG)
+AGEUNIT = YRS
+TUNIT = T8K
+RHOUNIT = LOG
+0.0 20.0 2.0
+1.0 10.0 3.0

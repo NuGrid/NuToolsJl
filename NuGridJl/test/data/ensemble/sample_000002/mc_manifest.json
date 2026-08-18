@@ -1,0 +1,11 @@
+{
+  "nova": "test_case",
+  "sample": 2,
+  "seed": 12345,
+  "sigma_ln": 0.6931471805599453,
+  "starlib_option": 1,
+  "sampling_model": "placeholder_shared_lognormal",
+  "rates": [
+    {"index": 7, "factor": 1.35, "reaction_names": ["3He_ag_7Be"], "article_reactions": ["3He(a,g)7Be"]}
+  ]
+}
