@@ -7,8 +7,12 @@
 
 N/Z tile chart of `ab`'s mass fractions, colored `log10(X)` on
 [`ABUNDANCE_COLORMAP`](@ref), mass number in each tile, element symbols along
-the left edge. Isotopes above `element_limit` (an element symbol) or below
-`tolerance` are omitted.
+the left edge. `element_limit` (an element symbol) is a hard cutoff — heavier
+isotopes aren't drawn at all. `tolerance` is only a *color* floor, not a
+visibility cutoff: every isotope `ab` tracks within `element_limit` gets a
+tile and a mass-number label, even if its abundance is below `tolerance` (it
+just colors at the floor, indistinguishable from zero) — so a blank patch on
+the chart always means "not tracked," never "tracked but negligible."
 """
 function abundance_chart(ab::Abundances; element_limit = "Ca", tolerance = 1e-10,
                           title = "Abundance Chart", figure_size = (900, 650),
@@ -16,9 +20,8 @@ function abundance_chart(ab::Abundances; element_limit = "Ca", tolerance = 1e-10
     max_z = proton_number(element_limit)
     max_z === nothing && throw(ArgumentError("unknown element_limit \"$element_limit\""))
 
-    df = filter(row -> 1 <= row.Z <= max_z && row.X >= tolerance, DataFrame(ab))
-    nrow(df) == 0 && throw(ArgumentError(
-        "no isotopes at or above tolerance=$tolerance up to element_limit=$element_limit"))
+    df = filter(:Z => z -> 1 <= z <= max_z, DataFrame(ab))
+    nrow(df) == 0 && throw(ArgumentError("no isotopes tracked up to element_limit=$element_limit"))
 
     min_n, max_n = extrema(df.N)
     color_limits = (log10(tolerance), 0.0)

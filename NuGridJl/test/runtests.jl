@@ -159,6 +159,10 @@ end
 
     in_ = inputs(run)
     @test in_.physics[:NVCP] == 55
+
+    traj = trajectory(run)
+    @test nrow(traj) > 0
+    @test traj.time_s[1] == 0.0
 end
 
 @testset "PPNSweep" begin
@@ -282,6 +286,22 @@ end
     tight_list = flux_reaction_list(run; cycle = :final, threshold = 1.0)  # nothing should pass
     @test nrow(tight_list) == 0
 
+    # whole-trajectory form: peak flux across a set of cycles, not just one.
+    # run.cycles[1] == 0 has no flux_00000.DAT (dY/dt isn't meaningful before
+    # any integration step) -- that must be skipped, not thrown on, so this
+    # deliberately includes it to exercise that.
+    @test run.cycles[1] == 0
+    @test !isfile(joinpath(NUPPN, "flux_00000.DAT"))
+    traj_list = flux_reaction_list(run, run.cycles[1:6])
+    @test nrow(traj_list) > 0
+    @test issorted(traj_list.flux; rev = true)
+    @test Set(names(traj_list)) == Set(["index", "reaction", "source", "rtype", "active", "flux", "peak_cycle", "rate"])
+    @test all(c -> c in run.cycles[1:6], traj_list.peak_cycle)
+    @test all(c -> c != 0, traj_list.peak_cycle)  # cycle 0 was skipped, so it can never be the peak
+    # scanning more cycles can only add reactions or raise peak flux, never remove either
+    single = flux_reaction_list(run; cycle = run.cycles[2])
+    @test Set(single.index) ⊆ Set(traj_list.index)
+
     sweep = PPNSweep(joinpath(DATA, "sweep"))
     table = sensitivity_table(sweep, "He-4")
     report = sensitivity_reaction_report(table)
@@ -313,6 +333,18 @@ end
 
     @test abundance_vs_time(run, ["He-4", "C-12"]) isa CM.Figure
     @test abundance_vs_time(run, Isotope(2, 4, 0)) isa CM.Figure
+
+    # a blank tile must only ever mean "not tracked" -- an impossibly strict
+    # tolerance/threshold puts every tracked isotope below the color/flux
+    # floor, but every one of them must still get a tile+label, so none of
+    # these should throw the old "nothing above tolerance" errors anymore.
+    @test abundance_chart(run, :final; tolerance = 1.0) isa CM.Figure
+    @test flux_chart(run, :final; tolerance = 1.0) isa CM.Figure
+    @test ratio_chart(ab1, ab2; tolerance = 1.0) isa CM.Figure
+
+    @test plot_trajectory(run) isa CM.Figure
+    @test plot_density_temperature(run) isa CM.Figure
+    @test plot_trajectory(trajectory(run)) isa CM.Figure
 end
 
 @testset "reaction_lookup" begin
@@ -327,6 +359,18 @@ end
     @test length(all_reactions) >= length(he4_reactions)
 
     @test describe_rate(first(he4_reactions)) isa String
+
+    # flux-aware form: structural candidates narrowed to ones that actually
+    # carried flux, single-cycle and whole-trajectory
+    he4_flux_final = reactions_for_isotope(run, Isotope(2, 4, 0), :final)
+    @test nrow(he4_flux_final) > 0
+    @test issorted(he4_flux_final.flux; rev = true)
+    structural_indices = Set(r.index for r in he4_reactions)
+    @test Set(he4_flux_final.index) ⊆ structural_indices
+
+    he4_flux_traj = reactions_for_isotope(run, Isotope(2, 4, 0), run.cycles[1:6])
+    @test "peak_cycle" in names(he4_flux_traj)
+    @test Set(he4_flux_traj.index) ⊆ structural_indices
 end
 
 end # testset "NuGridJl"

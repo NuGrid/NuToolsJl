@@ -8,9 +8,12 @@
 
 N/Z chart of `X(ab1) / X(ab2)`, colored on the diverging
 [`RATIO_COLORMAP`](@ref) (steelblue below 1, firebrick above 1), symmetrically
-clipped at `±color_range` dex. Isotopes present in only one of `ab1`/`ab2` are
-drawn hatched (gray) rather than dropped or pinned to an extreme color, since a
-ratio against a near-zero denominator isn't meaningful. See
+clipped at `±color_range` dex. Every isotope tracked by `ab1` or `ab2` within
+`element_limit` gets a tile and a mass-number label; isotopes where the ratio
+isn't well-defined (below `tolerance` in either side) are drawn hatched
+(gray) instead of colored, rather than dropped or pinned to an extreme
+color, since a ratio against a near-zero denominator isn't meaningful — a
+blank patch always means "tracked by neither," never "below threshold." See
 [`changed_isotopes`](@ref) for the ranked-list companion to this chart.
 """
 function ratio_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", tolerance = 1e-10,
@@ -27,15 +30,12 @@ function ratio_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", tol
     hatched = NamedTuple[]
     for iso in isos
         x1, x2 = ab1[iso], ab2[iso]
-        present1, present2 = x1 >= tolerance, x2 >= tolerance
-        if present1 && present2
+        if x1 >= tolerance && x2 >= tolerance
             push!(rows, (N = neutron_number(iso), Z = iso.Z, A = iso.A, log_ratio = log10(x1 / x2)))
-        elseif present1 || present2
+        else
             push!(hatched, (N = neutron_number(iso), Z = iso.Z, A = iso.A))
         end
     end
-    isempty(rows) && throw(ArgumentError("no isotope has a well-defined ratio (both above tolerance=$tolerance)"))
-
     all_n = vcat([r.N for r in rows], [r.N for r in hatched])
     min_n, max_n = extrema(all_n)
 

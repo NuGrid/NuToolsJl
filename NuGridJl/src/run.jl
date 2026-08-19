@@ -133,6 +133,15 @@ function isotopedatabase(run::PPNRun)
     end
 end
 
+"The thermodynamic trajectory for the run, from `trajectory.input` (cached)."
+function trajectory(run::PPNRun)
+    get!(run._cache, :trajectory) do
+        path = joinpath(run.dir, "trajectory.input")
+        isfile(path) || throw(ArgumentError("no trajectory.input in $(run.dir)"))
+        read_trajectory(path)
+    end
+end
+
 """
     inputs(run) -> NamedTuple
 

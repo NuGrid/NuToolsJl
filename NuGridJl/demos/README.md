@@ -3,14 +3,18 @@
 Jupyter notebooks walking through `NuGridJl`, in order:
 
 1. **`01_reading_ppn_output.ipynb`** — `PPNRun`, abundances, fluxes, the
-   `x-time.dat` series, the reaction network, the isotope database.
-2. **`02_abundance_and_flux_charts.ipynb`** — the nuclear-chart plots.
+   `x-time.dat` series, the reaction network, the isotope database, the
+   input trajectory.
+2. **`02_abundance_and_flux_charts.ipynb`** — the nuclear-chart plots (a
+   blank tile always means "not tracked," never "below threshold") and
+   plotting the trajectory itself.
 3. **`03_ratio_charts_and_time_evolution.ipynb`** — comparing two abundance
    sets, and plotting isotopes over time.
 4. **`04_iliadis_sensitivity_sweep.ipynb`** — `PPNSweep` and the Iliadis
    (2002)-style factored-rate sensitivity analysis, plus NPDATA rate curves.
 5. **`05_reaction_reporting.ipynb`** — the pre-study (flux) and post-study
-   (sensitivity) reaction lists.
+   (sensitivity) reaction lists, single-cycle and whole-trajectory (initial
+   to final).
 
 All five run standalone against the fixture data bundled in `test/data/` —
 no real NuPPN install or external data needed. Each notebook's first code
