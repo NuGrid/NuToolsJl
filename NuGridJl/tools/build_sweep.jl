@@ -77,32 +77,51 @@ const _CHANNEL_RTYPE = Dict(
 const _ALPHA_REVERSE_RTYPES = Set(["(p,a)", "(a,p)", "(n,a)", "(a,n)"])
 const _REVERSE_RTYPE = Dict("(p,a)" => "(a,p)", "(a,p)" => "(p,a)", "(n,a)" => "(a,n)", "(a,n)" => "(n,a)")
 
-_heaviest_species(isos) = isos[argmax(NuGridJl.mass_number.(isos))]
+# The light species a channel letter refers to -- used to pick the target out
+# of the reactant list by *role*, not by mass. Mass ordering breaks for the
+# one case a light projectile outweighs its target (3He(a,g)7Be: the alpha
+# projectile, A=4, is heavier than the 3He target, A=3) -- 'g' (gamma) has no
+# tracked species, meaning a single-reactant/single-product reaction.
+const _CHANNEL_SPECIES = Dict('p' => Isotope(1, 1, 0), 'a' => Isotope(2, 4, 0), 'n' => Isotope(0, 1, 0))
 
 function _parse_reaction_name(name::AbstractString)
     m = match(r"^(\d+[A-Za-z]+[gm]?)_([a-z]{2})_(\d+[A-Za-z]+[gm]?)$", name)
     m === nothing && throw(ArgumentError("reaction name must look like \"13N_pg_14O\" (got \"$name\")"))
-    rtype = get(_CHANNEL_RTYPE, m.captures[2], nothing)
-    rtype === nothing && throw(ArgumentError("unknown channel code \"$(m.captures[2])\" in \"$name\""))
-    return (target = Isotope(String(m.captures[1])), rtype = rtype, product = Isotope(String(m.captures[3])))
+    channel = m.captures[2]
+    rtype = get(_CHANNEL_RTYPE, channel, nothing)
+    rtype === nothing && throw(ArgumentError("unknown channel code \"$channel\" in \"$name\""))
+    return (target = Isotope(String(m.captures[1])), rtype = rtype, product = Isotope(String(m.captures[3])),
+            projectile = get(_CHANNEL_SPECIES, channel[1], nothing), ejectile = get(_CHANNEL_SPECIES, channel[2], nothing))
+end
+
+function _reactants_match(r::Reaction, target::Isotope, projectile::Union{Nothing,Isotope})
+    projectile === nothing && return length(r.reactants) == 1 && only(r.reactants) == target
+    return length(r.reactants) == 2 && target in r.reactants && projectile in r.reactants
+end
+
+function _products_match(r::Reaction, product::Isotope, ejectile::Union{Nothing,Isotope})
+    ejectile === nothing && return length(r.products) == 1 && only(r.products) == product
+    return length(r.products) == 2 && product in r.products && ejectile in r.products
 end
 
 """
     matching_reactions(net::Network, name::AbstractString) -> Vector{Reaction}
 
-Every reaction in `net` matching `name` (e.g. `"13N_pg_14O"`): heaviest
-reactant equals the parsed target, reaction-type code matches, and heaviest
-product equals the parsed product — or, if nothing matches on product too
-(the network's own boundary remapping can redirect an out-of-range product to
-a different species), every reaction matching just target+rtype.
+Every reaction in `net` matching `name` (e.g. `"13N_pg_14O"`, or
+`"3He_ag_7Be"` where the alpha projectile outweighs the 3He target):
+reactants are exactly `{target, projectile}` (or just `{target}` for a
+`g`-initiated channel), reaction-type code matches, and products are exactly
+`{product, ejectile}` (or just `{product}`) — or, if nothing matches on
+product too (the network's own boundary remapping can redirect an
+out-of-range product to a different species), every reaction matching just
+target+projectile+rtype.
 """
 function matching_reactions(net::Network, name::AbstractString)
-    target = _parse_reaction_name(name)
+    t = _parse_reaction_name(name)
     same_target_rtype = filter(net.reactions) do r
-        r.rtype == target.rtype && !isempty(r.reactants) && !isempty(r.products) &&
-            _heaviest_species(r.reactants) == target.target
+        r.rtype == t.rtype && _reactants_match(r, t.target, t.projectile)
     end
-    exact = filter(r -> _heaviest_species(r.products) == target.product, same_target_rtype)
+    exact = filter(r -> _products_match(r, t.product, t.ejectile), same_target_rtype)
     return isempty(exact) ? same_target_rtype : exact
 end
 
@@ -293,9 +312,18 @@ function build_sweep(template_dir::AbstractString, reaction_plan_path::AbstractS
     net = network(PPNRun(baseline_dir))
 
     run_dirs = String[]
+    unresolved = Tuple{String,String}[]  # (entry.name, error message)
     for entry in plan
-        reaction = resolve_reaction(net, entry; prefer_sources)
-        reverse = resolve_reverse(net, entry, reaction)
+        local reaction, reverse
+        try
+            reaction = resolve_reaction(net, entry; prefer_sources)
+            reverse = resolve_reverse(net, entry, reaction)
+        catch err
+            err isa ArgumentError || rethrow()
+            push!(unresolved, (entry.name, err.msg))
+            @warn "$(entry.name): could not resolve, skipping" exception = err.msg
+            continue
+        end
         pairs = reverse === nothing ? [(reaction.index, 0.0)] : [(reaction.index, 0.0), (reverse.index, 0.0)]
         for factor in entry.factors
             run_dir = joinpath(out_dir, entry.name, "fact_$(factor)")
@@ -303,6 +331,13 @@ function build_sweep(template_dir::AbstractString, reaction_plan_path::AbstractS
             write_rate_factors!(joinpath(run_dir, "ppn_physics.input"),
                                   [(idx, factor) for (idx, _) in pairs])
             push!(run_dirs, run_dir)
+        end
+    end
+
+    if !isempty(unresolved)
+        println("$(length(unresolved))/$(length(plan)) reaction(s) could not be resolved and were skipped:")
+        for (name, msg) in unresolved
+            println("  $name: $msg")
         end
     end
 

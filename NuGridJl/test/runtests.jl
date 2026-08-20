@@ -325,6 +325,9 @@ end
     @test flux_chart(run, :final) isa CM.Figure
     @test flux_chart(fluxes(run, :final), abundances(run, :final); show_abundance = false) isa CM.Figure
 
+    @test flux_chart(run, :final; show_labels = true, z_range = (5, 10)) isa CM.Figure
+    @test_throws ArgumentError flux_chart(fluxes(run, :final), abundances(run, :final); show_labels = true)
+
     ab1, ab2 = abundances(run, :final), abundances(run, :initial)
     @test ratio_chart(ab1, ab2) isa CM.Figure
     changed = changed_isotopes(ab1, ab2)
