@@ -56,6 +56,17 @@ used only on reactions where more than one row is active. If it doesn't
 narrow a reaction to one row, `build_sweep` throws rather than guessing —
 use an explicit `"index"` for that reaction instead.
 
+`--preset NAME` picks a reaction-*aware* tie-break ladder instead of (or
+ahead of, if `--priorities` is also given) the flat list — the priority
+order depends on the reaction's type and target mass, not just a single
+fixed source ranking. `"iliadis2002"` is the only preset so far (ported
+from `NovaSensitivityStudy/single-zone/tools/NovaRunTools.jl`'s
+`source_priority`): NACRE below A=20, ILI01 (Iliadis et al. 2002's own
+evaluation) from A=20-40 for charged-particle reactions, with separate
+ladders for weak and `(n,g)` reactions. `SOURCE_PRESETS` in
+`build_sweep.jl` is a plain `Dict{String,Function}` — add more presets
+there as other preferred rate-source configurations get worked out.
+
 Use `--dry-run` to build the directory tree and resolve every reaction name
 against the network (throws if any name doesn't match, or matches
 ambiguously) without actually launching `ppn.exe` — a cheap way to check a

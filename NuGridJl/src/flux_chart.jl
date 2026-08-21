@@ -71,17 +71,29 @@ function flux_chart(flux_df::DataFrame, ab::Abundances; element_limit = "Ca", to
             draw_empty_isotope_tiles!(ax, tiles; mass_label_size)
         end
 
-        reactions_by_index = show_labels ? Dict(r.index => r for r in net.reactions) : nothing
-
         for (row, value) in zip(eachrow(arrows), log_flux)
             draw_arrow!(ax, row.n_start, row.z_start, row.n_end, row.z_end;
                         color = chart_colormap_color(value, flux_limits, FLUX_COLORMAP),
                         linewidth = arrow_linewidth)
-            if show_labels
+        end
+
+        if show_labels
+            # ShaneGervais: more than one reaction can share the same pair of
+            # tile endpoints (e.g. two different channels between the same
+            # two isotopes) -- one draw_arrow_label! call per reaction would
+            # stack overlapping, illegible text at the same position, so
+            # reactions are grouped by arrow endpoints first and each group's
+            # labels joined onto their own line in a single text block.
+            reactions_by_index = Dict(r.index => r for r in net.reactions)
+            label_groups = Dict{NTuple{4,Int},Vector{String}}()
+            for row in eachrow(arrows)
                 r = get(reactions_by_index, row.index, nothing)
                 r === nothing && continue
-                draw_arrow_label!(ax, row.n_start, row.z_start, row.n_end, row.z_end,
-                                   "$(label(r))  $(r.source)"; fontsize = label_fontsize)
+                key = (row.n_start, row.z_start, row.n_end, row.z_end)
+                push!(get!(() -> String[], label_groups, key), "$(label(r))  $(r.source)")
+            end
+            for ((n1, z1, n2, z2), labels) in label_groups
+                draw_arrow_label!(ax, n1, z1, n2, z2, join(labels, "\n"); fontsize = label_fontsize)
             end
         end
         add_element_labels!(ax, tiles, min_n, z_hi; min_z = max(1, zlo_axis), element_label_size)

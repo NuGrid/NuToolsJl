@@ -8,14 +8,16 @@
 # own hand-rolled `Row`, and drops the nova_cases/-specific path assumptions
 # so it works on any template directory.
 #
-# Deliberately NOT ported: NovaRunTools.jl's `source_priority`/
-# `enforce_activation_policy`/`network_edits.json` machinery. That's network
-# *curation* (making sure each physical reaction has exactly one active row
-# before a sweep is ever built) — a separate concern from sweep-building
-# itself, and `resolve_reaction_index` doesn't use it either; it only needs
-# an already-curated network plus an optional `prefer_sources` tie-break
-# list. Worth porting separately (as a `setup_network.jl` equivalent) if it
-# turns out to be needed.
+# Also ports NovaRunTools.jl's `source_priority` (see SOURCE_PRESETS below)
+# as an optional, named `preset` -- the reaction-type/target-mass-dependent
+# priority ladder Iliadis et al. 2002 imply (NACRE below A=20, ILI01 from
+# 20-40, its own ladders for weak and (n,g) reactions), for when the plain
+# `--priorities` flat list isn't reaction-aware enough to pick a unique
+# active row. Deliberately NOT ported: NovaRunTools.jl's
+# `enforce_activation_policy`/`network_edits.json` machinery -- that's
+# network *curation* (making sure each physical reaction has exactly one
+# active row before a sweep is ever built), a separate concern from
+# sweep-building itself.
 #
 # Not part of the NuGridJl package: this is the one place allowed to write
 # ppn_physics.input rate overrides and launch ppn.exe. NuGridJl itself only
@@ -25,7 +27,7 @@
 # Usage:
 #   julia --project=<path to NuGridJl> tools/build_sweep.jl \
 #       <template_dir> <reaction_plan.json> <out_dir> \
-#       [--jobs N] [--dry-run] [--priorities SRC,...]
+#       [--jobs N] [--dry-run] [--priorities SRC,...] [--preset NAME]
 
 using NuGridJl
 using JSON
@@ -125,23 +127,67 @@ function matching_reactions(net::Network, name::AbstractString)
     return isempty(exact) ? same_target_rtype : exact
 end
 
+const _WEAK_RTYPES = Set(["(-,g)", "(+,g)"])
+const _NOVA_MAX_A = 40
+
+"Reaction-aware source priority ladder for the `\"iliadis2002\"` preset — see [`SOURCE_PRESETS`](@ref)."
+function _iliadis2002_source_priority(rtype::AbstractString, target_a::Integer)
+    if rtype in _WEAK_RTYPES
+        return ["ODA94", "NETB1", "FFW85", "LMP00", "JINAC", "BASEL", "JINAR", "JINAV"]
+    elseif rtype == "(n,g)"
+        return target_a < 20 ?
+            ["NACRR", "NACRL", "NACRU", "KADON", "JINAC", "BASEL", "JINAR", "JINAV"] :
+            ["ILI01", "NACRR", "NACRL", "NACRU", "KADON", "JINAC", "BASEL", "JINAR", "JINAV"]
+    elseif 1 <= target_a < 20
+        return ["NACRR", "NACRL", "NACRU", "JINAC", "BASEL", "JINAR", "JINAV", "VITAL", "RVRSE"]
+    elseif 20 <= target_a <= _NOVA_MAX_A
+        return ["ILI01", "JINAC", "BASEL", "JINAR", "JINAV", "NACRR", "NACRL", "NACRU", "KADON", "VITAL", "RVRSE"]
+    else
+        return ["JINAC", "BASEL", "JINAR", "JINAV", "KADON", "RVRSE", "VITAL"]
+    end
+end
+
 """
-    resolve_reaction(net::Network, entry::ReactionPlanEntry; prefer_sources = String[])
-        -> Reaction
+    SOURCE_PRESETS
+
+Named, reaction-aware rate-source priority ladders — an alternative to the
+flat `--priorities` list for when disambiguation genuinely depends on the
+reaction's type and target mass, not just a single fixed source order.
+Each entry is a function `(rtype, target_a) -> Vector{String}` (most
+preferred first), tried by [`resolve_reaction`](@ref) via the `preset`
+keyword. Add new presets here as the authors' own preferred configurations
+are worked out — this is meant to grow, not just hold one entry.
+
+`"iliadis2002"` ports NovaRunTools.jl's `source_priority`: NACRE below
+A=20, ILI01 (Iliadis et al. 2002's own evaluation) from 20-40 for the
+charged-particle "controlled" types, with separate ladders for weak
+((-,g)/(+,g)) and (n,g) reactions, matching the source choices implied by
+Iliadis et al. 2002's own network.
+"""
+const SOURCE_PRESETS = Dict{String,Function}(
+    "iliadis2002" => _iliadis2002_source_priority,
+)
+
+"""
+    resolve_reaction(net::Network, entry::ReactionPlanEntry; prefer_sources = String[],
+                      preset = nothing) -> Reaction
 
 Resolve `entry.name` to one `Reaction` in `net`, following the same rules as
 NovaRunTools.jl's `resolve_reaction_index`:
 - if `entry.index` is set, use that row (falling back to an unambiguous
   active alternative and warning, if the forced row turns out inactive);
-- otherwise prefer an active row; if more than one is active, `prefer_sources`
-  (tried in order) must narrow it to exactly one, or this throws — ambiguity
-  is never silently guessed at;
+- otherwise prefer an active row; if more than one is active, the priority
+  list — `prefer_sources` tried first, then `preset`'s (a key into
+  [`SOURCE_PRESETS`](@ref)) reaction-aware ladder if given — must narrow it
+  to exactly one, or this throws; ambiguity is never silently guessed at;
 - if no row is active, fall back to the single candidate if there's only one,
   otherwise throws.
 """
-function resolve_reaction(net::Network, entry::ReactionPlanEntry; prefer_sources::Vector{String} = String[])
+function resolve_reaction(net::Network, entry::ReactionPlanEntry; prefer_sources::Vector{String} = String[],
+                           preset::Union{Nothing,AbstractString} = nothing)
     candidates = matching_reactions(net, entry.name)
     isempty(candidates) && throw(ArgumentError("$(entry.name): no matching row in networksetup.txt"))
+    priorities = _resolve_priorities(entry.name, prefer_sources, preset)
 
     if entry.index !== nothing
         forced = filter(r -> r.index == entry.index, candidates)
@@ -149,7 +195,7 @@ function resolve_reaction(net::Network, entry::ReactionPlanEntry; prefer_sources
             found = only(forced)
             found.active && return found
             active = filter(r -> r.active, candidates)
-            chosen = _preferred_active(active, prefer_sources)
+            chosen = _preferred_active(active, priorities)
             if chosen !== nothing
                 @warn "$(entry.name): configured index $(entry.index) is inactive; using $(chosen.index) ($(chosen.source)) instead"
                 return chosen
@@ -160,12 +206,12 @@ function resolve_reaction(net::Network, entry::ReactionPlanEntry; prefer_sources
     end
 
     active = filter(r -> r.active, candidates)
-    chosen = _preferred_active(active, prefer_sources)
+    chosen = _preferred_active(active, priorities)
     chosen !== nothing && return chosen
     if length(active) > 1
         options = join(("$(r.index) ($(r.source))" for r in active), ", ")
         throw(ArgumentError("$(entry.name): ambiguous — $(length(active)) active rows ($options) — " *
-                              "add an explicit \"index\" to the reaction plan or pass --priorities"))
+                              "add an explicit \"index\" to the reaction plan, or pass --priorities/--preset"))
     elseif length(active) == 1
         return only(active)
     elseif length(candidates) == 1
@@ -176,6 +222,15 @@ function resolve_reaction(net::Network, entry::ReactionPlanEntry; prefer_sources
         throw(ArgumentError("$(entry.name): ambiguous — $(length(candidates)) inactive rows ($options) — " *
                               "add an explicit \"index\" to the reaction plan"))
     end
+end
+
+"Effective priority list for `name`: `prefer_sources` tried first, then `preset`'s reaction-aware ladder (if given)."
+function _resolve_priorities(name::AbstractString, prefer_sources::Vector{String}, preset::Union{Nothing,AbstractString})
+    preset === nothing && return prefer_sources
+    ladder = get(SOURCE_PRESETS, preset, nothing)
+    ladder === nothing && throw(ArgumentError("unknown preset \"$preset\" — known presets: $(join(keys(SOURCE_PRESETS), ", "))"))
+    t = _parse_reaction_name(name)
+    return vcat(prefer_sources, ladder(t.rtype, t.target.A))
 end
 
 function _preferred_active(active::Vector{Reaction}, prefer_sources::Vector{String})
@@ -285,7 +340,8 @@ end
 
 """
     build_sweep(template_dir, reaction_plan_path, out_dir;
-                jobs = 4, dry_run = false, prefer_sources = String[]) -> PPNSweep
+                jobs = 4, dry_run = false, prefer_sources = String[],
+                preset = nothing) -> PPNSweep
 
 Build a factored-rate sweep at `out_dir`: copy `template_dir` to
 `out_dir/baseline/` and run it once (its `networksetup.txt` is the
@@ -298,10 +354,16 @@ its `reverse_index`'s) `rate_index`/`rate_factor` written in. With
 `dry_run = true`, directories are built and namelists written but `ppn.exe`
 is never launched — useful for checking a reaction plan resolves before
 committing real compute to it.
+
+`prefer_sources`/`preset` are forwarded to [`resolve_reaction`](@ref) for
+every entry — `preset` (a key into [`SOURCE_PRESETS`](@ref), e.g.
+`"iliadis2002"`) picks a reaction-aware source ladder instead of (or ahead
+of) a flat `prefer_sources` list.
 """
 function build_sweep(template_dir::AbstractString, reaction_plan_path::AbstractString,
                       out_dir::AbstractString; jobs::Integer = 4, dry_run::Bool = false,
-                      prefer_sources::Vector{String} = String[])
+                      prefer_sources::Vector{String} = String[],
+                      preset::Union{Nothing,AbstractString} = nothing)
     plan = read_reaction_plan(reaction_plan_path)
     baseline_dir = joinpath(out_dir, "baseline")
 
@@ -316,7 +378,7 @@ function build_sweep(template_dir::AbstractString, reaction_plan_path::AbstractS
     for entry in plan
         local reaction, reverse
         try
-            reaction = resolve_reaction(net, entry; prefer_sources)
+            reaction = resolve_reaction(net, entry; prefer_sources, preset)
             reverse = resolve_reverse(net, entry, reaction)
         catch err
             err isa ArgumentError || rethrow()
@@ -351,7 +413,7 @@ function build_sweep(template_dir::AbstractString, reaction_plan_path::AbstractS
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    let jobs = 4, dry_run = false, prefer_sources = String[], positional = String[], i = 1
+    let jobs = 4, dry_run = false, prefer_sources = String[], preset = nothing, positional = String[], i = 1
         while i <= length(ARGS)
             a = ARGS[i]
             if a == "--jobs"
@@ -359,15 +421,17 @@ if abspath(PROGRAM_FILE) == @__FILE__
             elseif a == "--dry-run"
                 dry_run = true; i += 1
             elseif a == "--priorities"
-                prefer_sources = split(ARGS[i + 1], ','); i += 2
+                prefer_sources = String.(split(ARGS[i + 1], ',')); i += 2
+            elseif a == "--preset"
+                preset = ARGS[i + 1]; i += 2
             else
                 push!(positional, a); i += 1
             end
         end
         length(positional) == 3 || error(
             "usage: julia build_sweep.jl <template_dir> <reaction_plan.json> <out_dir> " *
-            "[--jobs N] [--dry-run] [--priorities SRC,...]")
-        sweep = build_sweep(positional...; jobs, dry_run, prefer_sources)
+            "[--jobs N] [--dry-run] [--priorities SRC,...] [--preset NAME]")
+        sweep = build_sweep(positional...; jobs, dry_run, prefer_sources, preset)
         println(sweep)
     end
 end
