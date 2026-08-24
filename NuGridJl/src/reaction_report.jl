@@ -8,34 +8,53 @@
 # off `sensitivity_table`'s long-format output.
 
 """
-    flux_reaction_list(run::PPNRun; cycle = :final, threshold = 1e-60) -> DataFrame
+    flux_reaction_list(run::PPNRun; cycle = :final, threshold = 1e-60,
+                        isotope = nothing, active_only = true) -> DataFrame
 
 The "pre-study" reaction list: every reaction carrying flux `>= threshold` at
-`cycle`, ranked by flux, with its label, rate source and printed rate (via
+`cycle`, ranked by flux, with its label, rate source and structural rate (via
 [`label`](@ref)/[`describe_rate`](@ref)'s underlying [`Reaction`](@ref)
 fields) — what actually mattered in the baseline, before any reaction gets
 factored or sampled.
+
+Pass `isotope` (an [`Isotope`](@ref)) to narrow the list to reactions where
+it's a reactant or product (`active_only` applies to that structural filter,
+same meaning as [`reactions_for_isotope`](@ref)) — e.g. "what actually
+carried flux through Be-7 at cycle 20," not just "what carried flux at
+all."
+
+The `rate_t9_0` column is `r.rate` — a single fixed value from
+`networksetup.txt`, evaluated once at build time (T9≈0), *not* the rate at
+`cycle` or anywhere else in the trajectory (see [`Reaction`](@ref)). `flux`
+is the real, cycle-specific quantity here; `rate_t9_0` is only a structural
+reference (which source, roughly what magnitude) — for the actual
+temperature-dependent rate use [`rate_curve`](@ref).
 """
-function flux_reaction_list(run::PPNRun; cycle = :final, threshold::Real = 1e-60)
+function flux_reaction_list(run::PPNRun; cycle = :final, threshold::Real = 1e-60,
+                             isotope::Union{Nothing,Isotope} = nothing, active_only::Bool = true)
     fx = fluxes(run, cycle)
     net = network(run)
     reactions_by_index = Dict(r.index => r for r in net.reactions)
+    candidates = isotope === nothing ? nothing :
+        Set(r.index for r in reactions_for_isotope(net, isotope; active_only))
 
     rows = NamedTuple[]
     for row in eachrow(fx)
         row.flux >= threshold || continue
+        candidates === nothing || row.index in candidates || continue
         r = get(reactions_by_index, row.index, nothing)
         r === nothing && continue
         push!(rows, (index = row.index, reaction = label(r), source = r.source, rtype = r.rtype,
-                      active = r.active, flux = row.flux, rate = r.rate))
+                      active = r.active, flux = row.flux, rate_t9_0 = r.rate))
     end
     isempty(rows) && return DataFrame(index = Int[], reaction = String[], source = String[],
-                                        rtype = String[], active = Bool[], flux = Float64[], rate = Float64[])
+                                        rtype = String[], active = Bool[], flux = Float64[], rate_t9_0 = Float64[])
     return sort(DataFrame(rows), :flux; rev = true)
 end
 
 """
-    flux_reaction_list(run::PPNRun, cycles; threshold = 1e-60) -> DataFrame
+    flux_reaction_list(run::PPNRun, cycles; threshold = 1e-60,
+                        isotope = nothing, active_only = true) -> DataFrame
 
 The whole-trajectory form: every reaction carrying flux `>= threshold` at
 *any* cycle in `cycles` (pass `run.cycles` for the entire outburst, initial
@@ -49,10 +68,23 @@ astrophysicist would actually want in a hydro sim's reaction network.
 Cycles with no `flux_NNNNN.DAT` (commonly the very first cycle — dY/dt isn't
 meaningful before any integration step has happened) are skipped rather than
 throwing, so `run.cycles` itself is always a safe choice for `cycles`.
+
+`isotope`/`active_only` narrow the list the same way as the single-cycle
+method — e.g. "everything that ever touched Be-7 across the whole outburst,"
+ranked by each reaction's own peak flux.
+
+As with the single-cycle form, `rate_t9_0` (`r.rate`) is one fixed build-time
+value (T9≈0) shared by every cycle — it does *not* vary with `peak_cycle` or
+track a range across `cycles` the way `flux` does. `flux`/`peak_cycle` are
+the real, per-cycle quantities here; `rate_t9_0` is only a structural
+reference. For the real per-cycle rate use [`rate_curve`](@ref).
 """
-function flux_reaction_list(run::PPNRun, cycles; threshold::Real = 1e-60)
+function flux_reaction_list(run::PPNRun, cycles; threshold::Real = 1e-60,
+                             isotope::Union{Nothing,Isotope} = nothing, active_only::Bool = true)
     net = network(run)
     reactions_by_index = Dict(r.index => r for r in net.reactions)
+    candidates = isotope === nothing ? nothing :
+        Set(r.index for r in reactions_for_isotope(net, isotope; active_only))
 
     peak = Dict{Int,NamedTuple{(:flux, :cycle),Tuple{Float64,Int}}}()
     for cyc in cycles
@@ -60,6 +92,7 @@ function flux_reaction_list(run::PPNRun, cycles; threshold::Real = 1e-60)
         fx = fluxes(run, cyc)
         for row in eachrow(fx)
             row.flux >= threshold || continue
+            candidates === nothing || row.index in candidates || continue
             prev = get(peak, row.index, nothing)
             (prev === nothing || row.flux > prev.flux) && (peak[row.index] = (flux = row.flux, cycle = Int(cyc)))
         end
@@ -70,10 +103,10 @@ function flux_reaction_list(run::PPNRun, cycles; threshold::Real = 1e-60)
         r = get(reactions_by_index, idx, nothing)
         r === nothing && continue
         push!(rows, (index = idx, reaction = label(r), source = r.source, rtype = r.rtype,
-                      active = r.active, flux = best.flux, peak_cycle = best.cycle, rate = r.rate))
+                      active = r.active, flux = best.flux, peak_cycle = best.cycle, rate_t9_0 = r.rate))
     end
     isempty(rows) && return DataFrame(index = Int[], reaction = String[], source = String[], rtype = String[],
-                                        active = Bool[], flux = Float64[], peak_cycle = Int[], rate = Float64[])
+                                        active = Bool[], flux = Float64[], peak_cycle = Int[], rate_t9_0 = Float64[])
     return sort(DataFrame(rows), :flux; rev = true)
 end
 

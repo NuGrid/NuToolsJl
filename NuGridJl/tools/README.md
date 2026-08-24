@@ -75,7 +75,33 @@ reaction plan before committing real compute to it.
 ## `run_parallel.jl`
 
 Shared helper: run a command in N directories concurrently, up to a job
-limit, logging each to `<dir>/run.log`. `include`d by `build_sweep.jl`.
+limit, logging each to `<dir>/run.log`. `include`d by `build_sweep.jl` and
+`build_decay_sweep.jl`.
+
+## `build_decay_sweep.jl`
+
+Post-process a finished trajectory run through nuppn's built-in decay-only
+mode (`decay`/`decay_time` in `ppn_physics.input`) at a range of decay
+durations — e.g. to see how long unstable species (Na-22, Al-26, C-14, Be-7,
+...) need to keep decaying after the trajectory ends before a Table-4-style
+comparison closes up.
+
+```julia
+include("build_decay_sweep.jl")
+built = build_decay_sweep(baseline_dir, out_dir, [
+    "1yr" => 3.156e7, "100yr" => 3.156e9, "1Myr" => 3.156e13,
+])  # (directory, seconds) pairs; each dir's result reads via
+    # abundances(PPNRun(dir), :decay)
+```
+
+Reuses `baseline_dir`'s already-compiled `ppn.exe` as-is for every decay-time
+variant (`decay`/`decay_time` are runtime namelist knobs, not compile-time
+array-sizing parameters — no recompilation needed, same reasoning as
+`build_sweep.jl`'s `fact_0.5`/`fact_2.0` variants sharing one binary). Each
+variant is seeded from `baseline_dir`'s highest-numbered `iso_massf#####.DAT`
+(copied in as `decay_seed.DAT`, deliberately not matching `PPNRun`'s
+`iso_massf\d+\.DAT` cycle-discovery pattern). `dry_run = true` builds the
+directories without launching `ppn.exe`.
 
 ## Monte Carlo ensemble building
 

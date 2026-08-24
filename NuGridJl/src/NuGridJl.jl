@@ -67,7 +67,7 @@ export
     # charts
     abundance_chart, flux_chart, ratio_chart, changed_isotopes, abundance_vs_time,
     # network lookups
-    reactions_for_isotope, describe_rate,
+    reaction_by_index, reactions_for_isotope, describe_rate, self_loop_reactions,
     # NPDATA / REACLIB rate curves
     ReaclibBlock, read_reaclib_blocks, reaclib_species, reaclib_rate,
     rate_curve_temperature_grid, rate_curve, rate_plot,

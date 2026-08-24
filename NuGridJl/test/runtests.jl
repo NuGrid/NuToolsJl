@@ -281,7 +281,7 @@ end
     @test nrow(flux_list) > 0
     @test issorted(flux_list.flux; rev = true)
     @test all(flux_list.flux .>= 1e-60)
-    @test Set(names(flux_list)) == Set(["index", "reaction", "source", "rtype", "active", "flux", "rate"])
+    @test Set(names(flux_list)) == Set(["index", "reaction", "source", "rtype", "active", "flux", "rate_t9_0"])
 
     tight_list = flux_reaction_list(run; cycle = :final, threshold = 1.0)  # nothing should pass
     @test nrow(tight_list) == 0
@@ -295,12 +295,29 @@ end
     traj_list = flux_reaction_list(run, run.cycles[1:6])
     @test nrow(traj_list) > 0
     @test issorted(traj_list.flux; rev = true)
-    @test Set(names(traj_list)) == Set(["index", "reaction", "source", "rtype", "active", "flux", "peak_cycle", "rate"])
+    @test Set(names(traj_list)) == Set(["index", "reaction", "source", "rtype", "active", "flux", "peak_cycle", "rate_t9_0"])
     @test all(c -> c in run.cycles[1:6], traj_list.peak_cycle)
     @test all(c -> c != 0, traj_list.peak_cycle)  # cycle 0 was skipped, so it can never be the peak
     # scanning more cycles can only add reactions or raise peak flux, never remove either
     single = flux_reaction_list(run; cycle = run.cycles[2])
     @test Set(single.index) ⊆ Set(traj_list.index)
+
+    # isotope-narrowed form: every row must structurally involve He-4, and
+    # narrowing can only ever remove rows relative to the unnarrowed list --
+    # also must exactly match reactions_for_isotope's PPNRun method, since
+    # that's now a thin wrapper over this same keyword.
+    he4 = Isotope(2, 4, 0)
+    net = network(run)
+    he4_indices = Set(r.index for r in reactions_for_isotope(net, he4))
+    he4_flux_list = flux_reaction_list(run; cycle = :final, isotope = he4)
+    @test nrow(he4_flux_list) > 0
+    @test Set(he4_flux_list.index) ⊆ he4_indices
+    @test Set(he4_flux_list.index) ⊆ Set(flux_list.index)
+    @test he4_flux_list == reactions_for_isotope(run, he4, :final)
+
+    he4_traj_list = flux_reaction_list(run, run.cycles[1:6]; isotope = he4)
+    @test Set(he4_traj_list.index) ⊆ he4_indices
+    @test he4_traj_list == reactions_for_isotope(run, he4, run.cycles[1:6])
 
     sweep = PPNSweep(joinpath(DATA, "sweep"))
     table = sensitivity_table(sweep, "He-4")
@@ -353,6 +370,13 @@ end
 @testset "reaction_lookup" begin
     run = PPNRun(NUPPN)
     net = network(run)
+
+    some_index = first(net.reactions).index
+    r = reaction_by_index(net, some_index)
+    @test r.index == some_index
+    @test r === net.reactions[findfirst(x -> x.index == some_index, net.reactions)]
+    @test_throws ArgumentError reaction_by_index(net, -1)
+
     he4_reactions = reactions_for_isotope(net, Isotope(2, 4, 0))
     @test !isempty(he4_reactions)
     @test all(r -> r.active, he4_reactions)
@@ -374,6 +398,19 @@ end
     he4_flux_traj = reactions_for_isotope(run, Isotope(2, 4, 0), run.cycles[1:6])
     @test "peak_cycle" in names(he4_flux_traj)
     @test Set(he4_flux_traj.index) ⊆ structural_indices
+
+    # self-loop diagnostic: every reaction it flags must genuinely share an
+    # isotope between reactants and products, and this fixture's full
+    # networksetup.txt is known (from the Iliadis2002Compairison Be-7 case)
+    # to carry real network_boundaries.F90 redirect artifacts, so it must
+    # find at least one.
+    loops = self_loop_reactions(net)
+    @test !isempty(loops)
+    @test all(r -> r.active, loops)
+    @test all(r -> !isempty(intersect(r.reactants, r.products)), loops)
+
+    loops_all = self_loop_reactions(net; active_only = false)
+    @test length(loops_all) >= length(loops)
 end
 
 end # testset "NuGridJl"

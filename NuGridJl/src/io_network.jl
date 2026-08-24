@@ -13,6 +13,15 @@ One network reaction: `index`, `active` flag, expanded `reactants`/`products`
 (stoichiometric multiplicity preserved, filler species dropped), the `rtype`
 code such as `\"(p,g)\"`, the rate `source` label, the printed `rate`, the applied
 `multiplier`, the `qvalue`, and the REACLIB `chapter`.
+
+`rate` is a single fixed value from `networksetup.txt` — evaluated once at
+build time (T9≈0, from `ppn_frame.input`'s namelist defaults, not the
+trajectory's actual temperature at any cycle) and never updated afterwards.
+It's useful as a structural/reference value (which source supplied this
+reaction, roughly what magnitude), but it is *not* the physical rate at any
+particular cycle — rates are temperature-dependent and the real trajectory's
+T9 is essentially always far from 0. For the actual per-cycle rate use
+[`rate_curve`](@ref) against NPDATA.
 """
 struct Reaction
     index::Int
