@@ -29,6 +29,49 @@
 #       <template_dir> <reaction_plan.json> <out_dir> \
 #       [--jobs N] [--dry-run] [--priorities SRC,...] [--preset NAME]
 
+function usage()
+    println("""
+Usage:
+  julia build_sweep.jl <template_dir> <reaction_plan.json> <out_dir> [options]
+
+Build an Iliadis (2002)-style one-reaction-at-a-time rate sweep: copy
+<template_dir> to <out_dir>/baseline and run it once (its networksetup.txt is
+the authoritative reaction ordering every factored run's index is resolved
+against), then for every (reaction, factor) pair in <reaction_plan.json>,
+copy <template_dir> again to <out_dir>/<reaction>/fact_<factor>/ with that
+reaction's rate factored, and run every variant.
+
+Arguments:
+  template_dir          Directory with a compiled ppn.exe, ppn_physics.input,
+                         isotopedatabase.txt, etc. -- copied for every run.
+  reaction_plan.json     List of reactions (name + factors, optionally a
+                         reverse_index) to sweep.
+  out_dir                Where to build baseline/ and <reaction>/fact_<factor>/.
+
+Options:
+  --jobs N                Number of ppn.exe runs in parallel (default: 4)
+  --dry-run               Build directories and resolve every reaction name
+                           against the network without launching ppn.exe --
+                           a cheap way to check a reaction plan before
+                           committing real compute to it
+  --priorities SRC,...    Flat rate-source priority list, highest first
+  --preset NAME            Named, reaction-aware source-priority ladder from
+                           SOURCE_PRESETS (currently: "iliadis2002") --
+                           combines with --priorities if both are given
+  -h, --help               Show this help
+
+Example:
+  julia build_sweep.jl nova_cases/ne_nova/ppn reaction_plan.json \\
+      nova_cases/ne_nova/run_sweep --preset iliadis2002 --jobs 8
+""")
+end
+
+# checked before `using NuGridJl` so --help works even if --project isn't
+# set up right -- it's the first thing a confused user reaches for.
+if abspath(PROGRAM_FILE) == (@__FILE__) && !isempty(ARGS) && ARGS[1] in ("-h", "--help")
+    usage(); exit(0)
+end
+
 using NuGridJl
 using JSON
 
@@ -414,23 +457,35 @@ end
 
 if abspath(PROGRAM_FILE) == @__FILE__
     let jobs = 4, dry_run = false, prefer_sources = String[], preset = nothing, positional = String[], i = 1
+        if isempty(ARGS) || ARGS[1] in ("-h", "--help")
+            usage(); exit(0)
+        end
         while i <= length(ARGS)
             a = ARGS[i]
-            if a == "--jobs"
+            if a in ("-h", "--help")
+                usage(); exit(0)
+            elseif a == "--jobs"
+                i == length(ARGS) && error("--jobs requires a value")
                 jobs = parse(Int, ARGS[i + 1]); i += 2
             elseif a == "--dry-run"
                 dry_run = true; i += 1
             elseif a == "--priorities"
+                i == length(ARGS) && error("--priorities requires a value")
                 prefer_sources = String.(split(ARGS[i + 1], ',')); i += 2
             elseif a == "--preset"
+                i == length(ARGS) && error("--preset requires a value")
                 preset = ARGS[i + 1]; i += 2
+            elseif startswith(a, "-")
+                println(stderr, "Unknown option: $a\n")
+                usage(); exit(1)
             else
                 push!(positional, a); i += 1
             end
         end
-        length(positional) == 3 || error(
-            "usage: julia build_sweep.jl <template_dir> <reaction_plan.json> <out_dir> " *
-            "[--jobs N] [--dry-run] [--priorities SRC,...] [--preset NAME]")
+        if length(positional) != 3
+            println(stderr, "Expected 3 positional arguments, got $(length(positional)).\n")
+            usage(); exit(1)
+        end
         sweep = build_sweep(positional...; jobs, dry_run, prefer_sources, preset)
         println(sweep)
     end

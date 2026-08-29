@@ -9,8 +9,12 @@ Run with the `NuGridJl` package's own environment, e.g. from this directory's
 parent:
 
 ```sh
-julia --project=. tools/build_sweep.jl <template_dir> <reaction_plan.json> <out_dir> [--jobs N] [--dry-run]
+julia --project=. tools/build_sweep.jl <template_dir> <reaction_plan.json> <out_dir> [options]
 ```
+
+Every script here takes `-h`/`--help` (works even without `--project` set up
+— it's checked before the package loads) and, on bad usage, prints the same
+help to stderr instead of a bare stacktrace.
 
 ## `build_sweep.jl`
 
@@ -80,11 +84,30 @@ limit, logging each to `<dir>/run.log`. `include`d by `build_sweep.jl` and
 
 ## `build_decay_sweep.jl`
 
-Post-process a finished trajectory run through nuppn's built-in decay-only
-mode (`decay`/`decay_time` in `ppn_physics.input`) at a range of decay
-durations — e.g. to see how long unstable species (Na-22, Al-26, C-14, Be-7,
-...) need to keep decaying after the trajectory ends before a Table-4-style
-comparison closes up.
+Post-process finished trajectory run(s) through nuppn's built-in decay-only
+mode (`decay`/`decay_time` in `ppn_physics.input`), once unstable species
+(Na-22, Al-26, C-14, Be-7, ...) are allowed to keep decaying after the
+trajectory ends. Two orchestration layers over the same per-run building
+block (`build_decay_run!`):
+
+**`times` mode** — one source run, many decay times (e.g. to find which
+decay time best matches a reference baseline):
+
+```sh
+julia build_decay_sweep.jl times <source_dir> <out_dir> --times s1,s2,... [options]
+```
+
+`--times` is comma-separated; each entry is a bare number of seconds
+(auto-labeled — `3600` becomes `decay_1hr/`) or an explicit `label=seconds`
+pair (`custom=12345` becomes `decay_custom/`):
+
+```sh
+julia build_decay_sweep.jl times run/baseline analysis \
+    --times 60,300,600,3600,1yr=3.156e7 --jobs 8
+```
+
+Or from Julia directly, with the same `"label" => seconds` pairs the CLI's
+bare numbers get auto-labeled into:
 
 ```julia
 include("build_decay_sweep.jl")
@@ -94,14 +117,35 @@ built = build_decay_sweep(baseline_dir, out_dir, [
     # abundances(PPNRun(dir), :decay)
 ```
 
-Reuses `baseline_dir`'s already-compiled `ppn.exe` as-is for every decay-time
-variant (`decay`/`decay_time` are runtime namelist knobs, not compile-time
-array-sizing parameters — no recompilation needed, same reasoning as
-`build_sweep.jl`'s `fact_0.5`/`fact_2.0` variants sharing one binary). Each
-variant is seeded from `baseline_dir`'s highest-numbered `iso_massf#####.DAT`
-(copied in as `decay_seed.DAT`, deliberately not matching `PPNRun`'s
-`iso_massf\d+\.DAT` cycle-discovery pattern). `dry_run = true` builds the
-directories without launching `ppn.exe`.
+**`tree` mode** — one decay time, many source runs: mirrors an entire
+`build_sweep.jl` output (`baseline/` plus every `<reaction>/fact_<factor>/`,
+found via `discover_ppn_runs`) into `out_dir`, decaying every run by the same
+`decay_time`, preserving the relative directory structure so a sensitivity
+comparison can be redone post-decay:
+
+```sh
+julia build_decay_sweep.jl tree <source_tree_dir> <out_dir> --decay-time SECONDS [options]
+# e.g.
+julia build_decay_sweep.jl tree run_sweep decay_run_sweep --decay-time 10800 --jobs 8
+```
+
+```julia
+decayed_dirs = decay_run_tree(sweep_dir, out_dir, 10800.0)  # 3 hr, every run
+```
+
+Both share the same mechanics: reuses each source run's already-compiled
+`ppn.exe` as-is (`decay`/`decay_time` are runtime namelist knobs, not
+compile-time array-sizing parameters — no recompilation needed, same
+reasoning as `build_sweep.jl`'s `fact_0.5`/`fact_2.0` variants sharing one
+binary), symlinked rather than copied. Each run is seeded from its source's
+highest-numbered `iso_massf#####.DAT`, reformatted into the fixed-width
+`post_abundance.DAT` that `abundances.F90`'s `iabuini = 11` path
+(`load_urs_frischknecht_xin`) expects — *not* nuppn's own per-cycle output
+format (an `iabuini = 5` version reading the raw file directly crashed
+instantly and unsymbolized; this is the proven-working pattern from
+`NovaSensitivityStudy/single-zone/tools/decay_ppn_sweep.jl`/
+`decay_time_scan.jl`). `dry_run = true` builds the directories without
+launching `ppn.exe`.
 
 ## Monte Carlo ensemble building
 
