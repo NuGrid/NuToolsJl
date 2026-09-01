@@ -36,6 +36,7 @@ include("chart_primitives.jl")
 include("abundance_chart.jl")
 include("flux_chart.jl")
 include("ratio_chart.jl")
+include("residual_chart.jl")
 include("xtime_plot.jl")
 include("reaction_lookup.jl")
 include("npdata.jl")
@@ -65,7 +66,7 @@ export
     FactoredRun, PPNSweep, MCSample, PPNEnsemble,
     reactions, factors, sweep_run, sample,
     # charts
-    abundance_chart, flux_chart, ratio_chart, changed_isotopes, abundance_vs_time,
+    abundance_chart, flux_chart, ratio_chart, residual_chart, changed_isotopes, abundance_vs_time,
     # network lookups
     reaction_by_index, reactions_for_isotope, describe_rate, self_loop_reactions,
     # NPDATA / REACLIB rate curves

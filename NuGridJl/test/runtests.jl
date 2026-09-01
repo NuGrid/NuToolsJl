@@ -351,6 +351,9 @@ end
     @test nrow(changed) > 0
     @test issorted(abs.(changed.log_ratio); rev = true)
 
+    @test residual_chart(ab1, ab2) isa CM.Figure
+    @test residual_chart(ab1, ab2; tolerance = 1.0) isa CM.Figure
+
     @test abundance_vs_time(run, ["He-4", "C-12"]) isa CM.Figure
     @test abundance_vs_time(run, Isotope(2, 4, 0)) isa CM.Figure
 
