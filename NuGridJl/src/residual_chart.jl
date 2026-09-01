@@ -49,7 +49,7 @@ function residual_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", 
             push!(neither, row)
         end
     end
-    all_n = vcat((r.N for r in created), (r.N for r in destroyed), (r.N for r in both), (r.N for r in neither))
+    all_n = vcat([r.N for r in created], [r.N for r in destroyed], [r.N for r in both], [r.N for r in neither])
     min_n, max_n = extrema(all_n)
 
     return with_nugrid_theme() do
@@ -65,8 +65,8 @@ function residual_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", 
         _draw_residual_tiles!(ax, both, _RESIDUAL_BOTH_COLOR, mass_label_size)
         _draw_residual_tiles!(ax, neither, (:gray, 0.15), mass_label_size)
 
-        elem_df = DataFrame(N = all_n, Z = vcat((r.Z for r in created), (r.Z for r in destroyed),
-                                                  (r.Z for r in both), (r.Z for r in neither)))
+        elem_df = DataFrame(N = all_n, Z = vcat([r.Z for r in created], [r.Z for r in destroyed],
+                                                  [r.Z for r in both], [r.Z for r in neither]))
         add_element_labels!(ax, elem_df, min_n, max_z; element_label_size)
 
         CM.Legend(fig[1, 2],
