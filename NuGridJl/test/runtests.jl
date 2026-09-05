@@ -365,6 +365,21 @@ end
     @test flux_chart(run, :final; tolerance = 1.0) isa CM.Figure
     @test ratio_chart(ab1, ab2; tolerance = 1.0) isa CM.Figure
 
+    # hide_below_tolerance = true opts out of that guarantee: isotopes below
+    # tolerance are dropped rather than drawn at the color floor.
+    @test abundance_chart(run, :final; hide_below_tolerance = true) isa CM.Figure
+    @test_throws ArgumentError abundance_chart(run, :final; tolerance = 1.0, hide_below_tolerance = true)
+
+    @test ratio_chart(ab1, ab2; hide_below_tolerance = true) isa CM.Figure
+    @test_throws ArgumentError ratio_chart(ab1, ab2; tolerance = 1.0, hide_below_tolerance = true)
+
+    @test residual_chart(ab1, ab2; hide_below_tolerance = true) isa CM.Figure
+    @test_throws ArgumentError residual_chart(ab1, ab2; tolerance = 1.0, hide_below_tolerance = true)
+
+    @test flux_chart(run, :final; hide_below_tolerance = true) isa CM.Figure
+    @test flux_chart(run, :final; hide_below_tolerance = true, show_abundance = false) isa CM.Figure
+    @test_throws ArgumentError flux_chart(run, :final; tolerance = 1.0, hide_below_tolerance = true)
+
     @test plot_trajectory(run) isa CM.Figure
     @test plot_density_temperature(run) isa CM.Figure
     @test plot_trajectory(trajectory(run)) isa CM.Figure

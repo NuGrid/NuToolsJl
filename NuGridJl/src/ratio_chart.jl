@@ -2,6 +2,7 @@
 
 """
     ratio_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", tolerance = 1e-10,
+                hide_below_tolerance = false,
                 color_range = 2.0, title = "Abundance ratio chart", figure_size = (950, 650),
                 element_label_size = 16, mass_label_size = 8,
                 colorbar_label = "log₁₀(ratio)") -> CM.Figure
@@ -15,8 +16,14 @@ isn't well-defined (below `tolerance` in either side) are drawn hatched
 color, since a ratio against a near-zero denominator isn't meaningful — a
 blank patch always means "tracked by neither," never "below threshold." See
 [`changed_isotopes`](@ref) for the ranked-list companion to this chart.
+
+Pass `hide_below_tolerance = true` to instead drop those hatched tiles
+entirely (no tile, no label) — decluttering down to only the isotopes with a
+well-defined ratio, at the cost of the "blank = tracked by neither"
+guarantee (a blank patch can now also mean "tracked, but ratio undefined").
 """
 function ratio_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", tolerance = 1e-10,
+                      hide_below_tolerance::Bool = false,
                       color_range = 2.0, title = "Abundance ratio chart", figure_size = (950, 650),
                       element_label_size = 16, mass_label_size = 8,
                       colorbar_label = "log₁₀(ratio)")
@@ -32,10 +39,12 @@ function ratio_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", tol
         x1, x2 = ab1[iso], ab2[iso]
         if x1 >= tolerance && x2 >= tolerance
             push!(rows, (N = neutron_number(iso), Z = iso.Z, A = iso.A, log_ratio = log10(x1 / x2)))
-        else
+        elseif !hide_below_tolerance
             push!(hatched, (N = neutron_number(iso), Z = iso.Z, A = iso.A))
         end
     end
+    isempty(rows) && isempty(hatched) && throw(ArgumentError(
+        "no isotopes with a well-defined ratio (>= tolerance=$tolerance on both sides) up to element_limit=$element_limit"))
     all_n = vcat([r.N for r in rows], [r.N for r in hatched])
     min_n, max_n = extrema(all_n)
 

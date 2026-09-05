@@ -10,6 +10,7 @@ const _RESIDUAL_BOTH_COLOR = (:gray, 0.55)
 
 """
     residual_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", tolerance = 1e-10,
+                   hide_below_tolerance = false,
                    title = "Residual Chart", figure_size = (950, 650),
                    element_label_size = 16, mass_label_size = 8) -> CM.Figure
 
@@ -22,8 +23,14 @@ matching `ratio_chart`'s color for `X1 < X2`). Isotopes tracked at or above
 covers their relative magnitude, a ratio chart and a residual chart are
 meant to be read together, right after one another, not as substitutes.
 Isotopes below `tolerance` on both sides are left blank.
+
+Pass `hide_below_tolerance = true` to drop those below-tolerance-on-both-sides
+tiles entirely (no tile, no label, no legend entry) instead of leaving them
+blank — the created/destroyed/both tiles are unaffected either way, since
+none of them are below tolerance on both sides by construction.
 """
 function residual_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", tolerance = 1e-10,
+                         hide_below_tolerance::Bool = false,
                          title = "Residual Chart", figure_size = (950, 650),
                          element_label_size = 16, mass_label_size = 8)
     max_z = proton_number(element_limit)
@@ -45,10 +52,12 @@ function residual_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", 
             push!(destroyed, row)
         elseif !present1 && present2
             push!(created, row)
-        else
+        elseif !hide_below_tolerance
             push!(neither, row)
         end
     end
+    isempty(created) && isempty(destroyed) && isempty(both) && isempty(neither) && throw(ArgumentError(
+        "no isotopes tracked at or above tolerance=$tolerance on either side up to element_limit=$element_limit"))
     all_n = vcat([r.N for r in created], [r.N for r in destroyed], [r.N for r in both], [r.N for r in neither])
     min_n, max_n = extrema(all_n)
 
@@ -69,11 +78,14 @@ function residual_chart(ab1::Abundances, ab2::Abundances; element_limit = "Ca", 
                                                   [r.Z for r in both], [r.Z for r in neither]))
         add_element_labels!(ax, elem_df, min_n, max_z; element_label_size)
 
-        CM.Legend(fig[1, 2],
-            [CM.PolyElement(color = _RESIDUAL_DESTROYED_COLOR), CM.PolyElement(color = _RESIDUAL_CREATED_COLOR),
-             CM.PolyElement(color = _RESIDUAL_BOTH_COLOR), CM.PolyElement(color = (:gray, 0.15))],
-            ["destroyed (X1→below tol.)", "created (below tol.→X2)",
-             "tracked in both", "tracked in neither"])
+        legend_elements = [CM.PolyElement(color = _RESIDUAL_DESTROYED_COLOR), CM.PolyElement(color = _RESIDUAL_CREATED_COLOR),
+                            CM.PolyElement(color = _RESIDUAL_BOTH_COLOR)]
+        legend_labels = ["destroyed (X1→below tol.)", "created (below tol.→X2)", "tracked in both"]
+        if !hide_below_tolerance
+            push!(legend_elements, CM.PolyElement(color = (:gray, 0.15)))
+            push!(legend_labels, "tracked in neither")
+        end
+        CM.Legend(fig[1, 2], legend_elements, legend_labels)
         fig
     end
 end

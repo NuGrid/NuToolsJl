@@ -2,6 +2,7 @@
 
 """
     flux_chart(flux_df::DataFrame, ab::Abundances; element_limit = "Ca", tolerance = 1e-10,
+               hide_below_tolerance = false,
                show_abundance = true, n_range = nothing, z_range = nothing,
                title = "Flux Chart", figure_size = (900, 650), element_label_size = 16,
                mass_label_size = 8, arrow_linewidth = 2,
@@ -17,6 +18,13 @@ mass fraction when `show_abundance = true` (so flux and abundance read
 together), or left white otherwise. `z_range`/`n_range` (each a `(lo, hi)`
 tuple) zoom to a region instead of the whole chart up to `element_limit`.
 
+Pass `hide_below_tolerance = true` to instead drop isotope tiles whose
+abundance is below `tolerance` entirely (no tile, no label — same knob and
+meaning as [`abundance_chart`](@ref)'s), at the cost of the "blank = not
+tracked" guarantee. Arrows are only ever drawn (flux `>= tolerance`, per the
+usual meaning above); with this on, any arrow whose start or end isotope got
+dropped is dropped too, so no arrow is ever left dangling into a blank spot.
+
 With `show_labels = true`, each arrow is annotated with its reaction label
 and source (e.g. `"12C(p,g)13N  JINAC"`, via [`label`](@ref) and
 [`Reaction.source`](@ref Reaction)), which needs `net` (a [`Network`](@ref),
@@ -25,6 +33,7 @@ tightly zoomed chart (e.g. `z_range = (5, 10)`), since every arrow on a
 whole-chart flux plot would be unreadable clutter.
 """
 function flux_chart(flux_df::DataFrame, ab::Abundances; element_limit = "Ca", tolerance = 1e-10,
+                     hide_below_tolerance::Bool = false,
                      show_abundance = true, n_range = nothing, z_range = nothing,
                      title = "Flux Chart", figure_size = (900, 650), element_label_size = 16,
                      mass_label_size = 8, arrow_linewidth = 2,
@@ -40,13 +49,21 @@ function flux_chart(flux_df::DataFrame, ab::Abundances; element_limit = "Ca", to
         n_lo, n_hi = n_range
         filter!(:N => n -> n_lo <= n <= n_hi, tiles)
     end
-    nrow(tiles) == 0 && throw(ArgumentError("no isotopes tracked in the requested region"))
+    hide_below_tolerance && filter!(:X => x -> x >= tolerance, tiles)
+    nrow(tiles) == 0 && throw(ArgumentError(
+        hide_below_tolerance ?
+            "no isotopes at or above tolerance=$tolerance in the requested region" :
+            "no isotopes tracked in the requested region"))
     min_n, max_n = extrema(tiles.N)
 
     arrows = filter(row -> row.flux >= tolerance && z_lo <= row.z_start <= z_hi && z_lo <= row.z_end <= z_hi, flux_df)
     if n_range !== nothing
         n_lo, n_hi = n_range
         filter!(row -> n_lo <= row.n_start <= n_hi && n_lo <= row.n_end <= n_hi, arrows)
+    end
+    if hide_below_tolerance
+        tile_set = Set(zip(tiles.N, tiles.Z))
+        filter!(row -> (row.n_start, row.z_start) in tile_set && (row.n_end, row.z_end) in tile_set, arrows)
     end
     log_flux = isempty(arrows) ? Float64[] : log10.(max.(arrows.flux, tolerance))
     flux_limits = isempty(log_flux) ? (log10(tolerance), log10(tolerance) + 1.0) : (log10(tolerance), maximum(log_flux))
