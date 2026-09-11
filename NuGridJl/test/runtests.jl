@@ -230,6 +230,24 @@ end
     @test_throws DomainError reaclib_rate((0.0, 0, 0, 0, 0, 0, 0), -1.0)
 end
 
+@testset "starlib_curve" begin
+    fixture = joinpath(DATA, "starlib_test", "starlib_fixture.txt")
+
+    curve = starlib_rate_curve(fixture, ["p", "tst1", "tst2"])
+    @test nrow(curve) == 60
+    @test curve.T9[1] ≈ 0.01
+    @test curve.T9[end] ≈ 0.60
+    @test curve.rate[1] ≈ 1.0e-10
+    @test curve.factor[1] ≈ 1.10
+    @test curve.factor[end] ≈ 1.10 + 0.01 * 59
+
+    # order-independent species matching, same as build_sigma_sweep.jl's tool
+    @test starlib_rate_curve(fixture, ["tst2", "p", "tst1"]) == curve
+
+    @test_throws ArgumentError starlib_rate_curve(fixture, ["p", "tst1"])       # 0 matches
+    @test_throws ArgumentError starlib_rate_curve(fixture, ["p"])               # 0 matches
+end
+
 @testset "tables" begin
     df = DataFrame(reaction = ["a", "b"], ratio = [1.23456, missing])
     md = dataframe_to_markdown(df)

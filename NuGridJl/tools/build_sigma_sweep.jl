@@ -53,6 +53,7 @@ function usage()
     println("""
 Usage:
   julia build_sigma_sweep.jl <template_dir> <out_dir> --reaction SPECIES,... [options]
+  julia build_sigma_sweep.jl <template_dir> <out_dir_root> --reactions-file FILE [options]
 
 Build a ±Nσ STARLIB rate-uncertainty sweep for one reaction: for each
 starlib_option in --options, a baseline_opt<N>/ run (unmodified) plus one
@@ -60,18 +61,32 @@ run_<sigma>sigma_opt<N>/ per value in --sigmas, with that reaction's tabulated
 median rate multiplied by STARLIB's own per-T9 uncertainty factor raised to
 the sigma power, in a rewritten copy of the underlying STARLIB data file.
 
+The --reactions-file form builds many reactions in one Julia session (each at
+out_dir_root/<name>/), reusing NuGridJl's already-loaded/precompiled state
+across all of them -- looping separate CLI invocations of this script instead
+would pay Julia's package-load cost once per reaction.
+
 Arguments:
   template_dir   Directory with a compiled ppn.exe, ppn_physics.input,
                  isotopedatabase.txt, etc. -- copied for every run.
-  out_dir        Where to build baseline_opt<N>/ and run_<sigma>sigma_opt<N>/
-                 (each containing a ppn/ subdirectory with the actual run).
+  out_dir        (--reaction form) Where to build baseline_opt<N>/ and
+                 run_<sigma>sigma_opt<N>/ (each containing a ppn/ subdirectory
+                 with the actual run).
+  out_dir_root   (--reactions-file form) Each reaction gets its own
+                 out_dir_root/<name>/baseline_opt<N>/ etc.
 
 Options:
-  --reaction SPECIES,...  (required) comma-separated species tokens exactly
-                          as they appear in the STARLIB reaction file, e.g.
+  --reaction SPECIES,...  comma-separated species tokens exactly as they
+                          appear in the STARLIB reaction file, e.g.
                           "p,f18,he4,o15" for 18F(p,a)15O. Matched as a set
                           against each reaction's non-blank e1..e6 fields --
-                          must resolve to exactly one row.
+                          must resolve to exactly one row. Mutually exclusive
+                          with --reactions-file; one of the two is required.
+  --reactions-file FILE   A text file, one reaction per line:
+                          "name: species1,species2,..." (blank lines and
+                          lines starting with # are skipped), e.g.
+                          "16O_pg_17F: o16,p,f17". Mutually exclusive with
+                          --reaction; one of the two is required.
   --sigmas N,...          Sigma levels to run (default: -2,-1,1,2). Each N
                           multiplies the tabulated median rate by factor^N at
                           every T9 point.
@@ -397,6 +412,56 @@ function build_sigma_sweep(template_dir::AbstractString, out_dir::AbstractString
     return run_dirs
 end
 
+"""
+    read_reactions_file(path) -> Vector{Pair{String,Vector{String}}}
+
+Parse a `--reactions-file`: one reaction per line, `name: species1,species2,...`
+(blank lines and lines starting with `#` are skipped), e.g.:
+
+    16O_pg_17F: o16,p,f17
+    18F_pa_15O: f18,p,o15,he4
+"""
+function read_reactions_file(path::AbstractString)
+    reactions = Pair{String,Vector{String}}[]
+    for line in eachline(path)
+        line = strip(line)
+        (isempty(line) || startswith(line, "#")) && continue
+        occursin(':', line) || throw(ArgumentError("malformed line in $path (expected \"name: species,...\"): $line"))
+        name, species_text = split(line, ':'; limit = 2)
+        species = String.(strip.(split(species_text, ',')))
+        push!(reactions, strip(name) => species)
+    end
+    isempty(reactions) && throw(ArgumentError("no reactions found in $path"))
+    return reactions
+end
+
+"""
+    build_batch_sigma_sweep(template_dir, out_dir_root, reactions;
+                             sigmas = [-2, -1, 1, 2], options = [1, 2],
+                             jobs = 4, dry_run = false) -> Dict{String,Vector{String}}
+
+Build a [`build_sigma_sweep`](@ref) at `out_dir_root/<name>/` for every
+`(name, species)` pair in `reactions` (see [`read_reactions_file`](@ref)),
+one reaction after another within a single Julia session -- avoids paying
+Julia's package-load/precompile cost once per reaction the way looping
+separate CLI invocations of this script would. Each reaction's own 10 runs
+(baseline + sigmas, per option) still run in parallel among themselves via
+`run_parallel`, same as a single-reaction `build_sigma_sweep` call; reactions
+themselves run one after another, not concurrently with each other. Returns
+a `name => run_dirs` `Dict`.
+"""
+function build_batch_sigma_sweep(template_dir::AbstractString, out_dir_root::AbstractString,
+                                  reactions::Vector{<:Pair}; sigmas::Vector{<:Real} = [-2, -1, 1, 2],
+                                  options::Vector{<:Integer} = [1, 2], jobs::Integer = 4, dry_run::Bool = false)
+    results = Dict{String,Vector{String}}()
+    for (i, (name, species)) in enumerate(reactions)
+        println("[$i/$(length(reactions))] building $name ...")
+        out_dir = joinpath(out_dir_root, name)
+        results[name] = build_sigma_sweep(template_dir, out_dir, species; sigmas, options, jobs, dry_run)
+    end
+    return results
+end
+
 function parse_int_list(text::AbstractString)
     return [parse(Int, strip(s)) for s in split(text, ',') if !isempty(strip(s))]
 end
@@ -406,7 +471,7 @@ function parse_real_list(text::AbstractString)
 end
 
 if abspath(PROGRAM_FILE) == (@__FILE__)
-    let jobs = 4, dry_run = false, reaction_arg = nothing,
+    let jobs = 4, dry_run = false, reaction_arg = nothing, reactions_file = nothing,
         sigmas = Float64[-2, -1, 1, 2], options = Int[1, 2], positional = String[], i = 1
 
         if isempty(ARGS) || ARGS[1] in ("-h", "--help")
@@ -419,6 +484,9 @@ if abspath(PROGRAM_FILE) == (@__FILE__)
             elseif a == "--reaction"
                 i == length(ARGS) && error("--reaction requires a value")
                 reaction_arg = String.(strip.(split(ARGS[i + 1], ','))); i += 2
+            elseif a == "--reactions-file"
+                i == length(ARGS) && error("--reactions-file requires a value")
+                reactions_file = ARGS[i + 1]; i += 2
             elseif a == "--sigmas"
                 i == length(ARGS) && error("--sigmas requires a value")
                 sigmas = parse_real_list(ARGS[i + 1]); i += 2
@@ -441,10 +509,21 @@ if abspath(PROGRAM_FILE) == (@__FILE__)
             println(stderr, "Expected 2 positional arguments (<template_dir> <out_dir>), got $(length(positional)).\n")
             usage(); exit(1)
         end
-        reaction_arg === nothing && (println(stderr, "--reaction is required.\n"); usage(); exit(1))
+        if reaction_arg === nothing && reactions_file === nothing
+            println(stderr, "one of --reaction or --reactions-file is required.\n"); usage(); exit(1)
+        end
+        if reaction_arg !== nothing && reactions_file !== nothing
+            println(stderr, "--reaction and --reactions-file are mutually exclusive.\n"); usage(); exit(1)
+        end
 
         template_dir, out_dir = positional
-        built = build_sigma_sweep(template_dir, out_dir, reaction_arg; sigmas, options, jobs, dry_run)
-        println(length(built), " run(s) built at ", out_dir)
+        if reactions_file !== nothing
+            reactions = read_reactions_file(reactions_file)
+            results = build_batch_sigma_sweep(template_dir, out_dir, reactions; sigmas, options, jobs, dry_run)
+            println(length(results), " reaction(s) built under ", out_dir)
+        else
+            built = build_sigma_sweep(template_dir, out_dir, reaction_arg; sigmas, options, jobs, dry_run)
+            println(length(built), " run(s) built at ", out_dir)
+        end
     end
 end

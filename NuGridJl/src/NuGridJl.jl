@@ -40,6 +40,7 @@ include("residual_chart.jl")
 include("xtime_plot.jl")
 include("reaction_lookup.jl")
 include("npdata.jl")
+include("starlib_curve.jl")
 include("tables.jl")
 include("sensitivity_iliadis.jl")
 include("reaction_report.jl")
@@ -72,6 +73,7 @@ export
     # NPDATA / REACLIB rate curves
     ReaclibBlock, read_reaclib_blocks, reaclib_species, reaclib_rate,
     rate_curve_temperature_grid, rate_curve, rate_plot,
+    starlib_rate_curve,
     # table export
     RenderedHTML, dataframe_to_markdown, dataframe_to_html, save_table,
     # Iliadis-style sensitivity
