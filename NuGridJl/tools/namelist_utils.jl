@@ -42,3 +42,30 @@ function update_namelist(text::AbstractString, replacements::Vector{<:Pair})
 end
 
 fortran_double(value::Real) = replace(@sprintf("%.10E", value), "E" => "d")
+
+"""
+    write_rate_factors!(ppn_physics_input_path, index_factor_pairs)
+
+Insert `rate_index(i) = <index>` / `rate_factor(i) = <factor>` for each
+`(index, factor)` pair, just before the `&ppn_physics` namelist's closing
+`/`. Slots are numbered from 1 (NuPPN supports up to `num_rate_factors = 10`).
+This is ppn's own runtime rate-factor mechanism (`apply_rate_factors` in
+`evaluate_rates.F90`): a single flat, T9-independent multiplicative scalar
+applied to whatever the reaction evaluates to at each timestep, addressed by
+reaction index -- works for any rate source (STARLIB, NACRE, JINA, weak-rate
+tables, ...), unlike `build_sigma_sweep.jl`'s STARLIB-file-rewriting sweep,
+which only works for STARLIB-sourced reactions.
+"""
+function write_rate_factors!(ppn_physics_input_path::AbstractString, index_factor_pairs)
+    lines = readlines(ppn_physics_input_path)
+    terminator = findfirst(l -> strip(l) == "/", lines)
+    terminator === nothing && throw(ArgumentError(
+        "no namelist terminator '/' found in $ppn_physics_input_path"))
+    new_lines = String[]
+    for (i, (index, factor)) in enumerate(index_factor_pairs)
+        push!(new_lines, "        rate_index($i) = $index")
+        push!(new_lines, "        rate_factor($i) = $(factor)")
+    end
+    splice!(lines, terminator:(terminator - 1), new_lines)
+    write(ppn_physics_input_path, join(lines, "\n") * "\n")
+end

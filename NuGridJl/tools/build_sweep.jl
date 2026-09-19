@@ -76,6 +76,7 @@ using NuGridJl
 using JSON
 
 include("run_parallel.jl")
+include("namelist_utils.jl")
 
 # ---------------------------------------------------------------------------
 # reaction plan
@@ -354,27 +355,6 @@ function _find_npdata_target(template_dir::AbstractString)
         isdir(candidate) && return realpath(candidate)
     end
     return nothing
-end
-
-"""
-    write_rate_factors!(ppn_physics_input_path, index_factor_pairs)
-
-Insert `rate_index(i) = <index>` / `rate_factor(i) = <factor>` for each
-`(index, factor)` pair, just before the `&ppn_physics` namelist's closing
-`/`. Slots are numbered from 1 (NuPPN supports up to `num_rate_factors = 10`).
-"""
-function write_rate_factors!(ppn_physics_input_path::AbstractString, index_factor_pairs)
-    lines = readlines(ppn_physics_input_path)
-    terminator = findfirst(l -> strip(l) == "/", lines)
-    terminator === nothing && throw(ArgumentError(
-        "no namelist terminator '/' found in $ppn_physics_input_path"))
-    new_lines = String[]
-    for (i, (index, factor)) in enumerate(index_factor_pairs)
-        push!(new_lines, "        rate_index($i) = $index")
-        push!(new_lines, "        rate_factor($i) = $(factor)")
-    end
-    splice!(lines, terminator:(terminator - 1), new_lines)
-    write(ppn_physics_input_path, join(lines, "\n") * "\n")
 end
 
 # ---------------------------------------------------------------------------

@@ -54,50 +54,73 @@ function usage()
 Usage:
   julia build_sigma_sweep.jl <template_dir> <out_dir> --reaction SPECIES,... [options]
   julia build_sigma_sweep.jl <template_dir> <out_dir_root> --reactions-file FILE [options]
+  julia build_sigma_sweep.jl <template_dir> <out_dir> --rate-index N [options]
+  julia build_sigma_sweep.jl <template_dir> <out_dir_root> --rate-index-file FILE [options]
 
-Build a ±Nσ STARLIB rate-uncertainty sweep for one reaction: for each
-starlib_option in --options, a baseline_opt<N>/ run (unmodified) plus one
-run_<sigma>sigma_opt<N>/ per value in --sigmas, with that reaction's tabulated
-median rate multiplied by STARLIB's own per-T9 uncertainty factor raised to
-the sigma power, in a rewritten copy of the underlying STARLIB data file.
+Build a ±Nσ rate-uncertainty sweep for one reaction: for each starlib_option
+in --options, a baseline_opt<N>/ run (unmodified) plus one
+run_<sigma>sigma_opt<N>/ per value in --sigmas.
 
-The --reactions-file form builds many reactions in one Julia session (each at
-out_dir_root/<name>/), reusing NuGridJl's already-loaded/precompiled state
-across all of them -- looping separate CLI invocations of this script instead
-would pay Julia's package-load cost once per reaction.
+--reaction/--reactions-file (STARLIB-sourced reactions only): that reaction's
+tabulated median rate multiplied by STARLIB's own per-T9 uncertainty factor
+raised to the sigma power, in a rewritten copy of the underlying STARLIB data
+file -- preserves the real T9-dependent uncertainty.
+
+--rate-index/--rate-index-file (any rate source): for reactions with no
+STARLIB (or other tabulated) uncertainty at all -- NACRE, JINA, weak-rate
+tables, Iliadis, reverse rates, ... -- a blanket factor uncertainty
+(--base-factor, default 10) applied via ppn's own rate_index/rate_factor
+namelist mechanism instead: a single flat, T9-independent multiplicative
+scalar (base_factor^sigma), Iliadis (2002)'s own fallback for reactions with
+no real uncertainty propagation available. `N`/the index column is a
+networksetup.txt reaction index, resolved by you ahead of time.
+
+The --reactions-file/--rate-index-file forms build many reactions in one
+Julia session (each at out_dir_root/<name>/), reusing NuGridJl's
+already-loaded/precompiled state across all of them -- looping separate CLI
+invocations of this script instead would pay Julia's package-load cost once
+per reaction.
 
 Arguments:
   template_dir   Directory with a compiled ppn.exe, ppn_physics.input,
                  isotopedatabase.txt, etc. -- copied for every run.
-  out_dir        (--reaction form) Where to build baseline_opt<N>/ and
-                 run_<sigma>sigma_opt<N>/ (each containing a ppn/ subdirectory
-                 with the actual run).
-  out_dir_root   (--reactions-file form) Each reaction gets its own
-                 out_dir_root/<name>/baseline_opt<N>/ etc.
+  out_dir        (--reaction/--rate-index forms) Where to build
+                 baseline_opt<N>/ and run_<sigma>sigma_opt<N>/ (each
+                 containing a ppn/ subdirectory with the actual run).
+  out_dir_root   (--reactions-file/--rate-index-file forms) Each reaction
+                 gets its own out_dir_root/<name>/baseline_opt<N>/ etc.
 
-Options:
+Options (exactly one of the first four is required):
   --reaction SPECIES,...  comma-separated species tokens exactly as they
                           appear in the STARLIB reaction file, e.g.
                           "p,f18,he4,o15" for 18F(p,a)15O. Matched as a set
                           against each reaction's non-blank e1..e6 fields --
-                          must resolve to exactly one row. Mutually exclusive
-                          with --reactions-file; one of the two is required.
+                          must resolve to exactly one row.
   --reactions-file FILE   A text file, one reaction per line:
                           "name: species1,species2,..." (blank lines and
                           lines starting with # are skipped), e.g.
-                          "16O_pg_17F: o16,p,f17". Mutually exclusive with
-                          --reaction; one of the two is required.
+                          "16O_pg_17F: o16,p,f17".
+  --rate-index N          A single networksetup.txt reaction index to sweep
+                          with a blanket factor uncertainty (see above).
+  --rate-index-file FILE  A text file, one reaction per line: "name: index"
+                          (blank/# lines skipped), e.g. "13N_pg_14O: 306".
+  --base-factor F         Blanket factor uncertainty for --rate-index/
+                          --rate-index-file (default: 10.0) -- ignored for
+                          --reaction/--reactions-file, which always use
+                          STARLIB's own tabulated factor.
   --sigmas N,...          Sigma levels to run (default: -2,-1,1,2). Each N
-                          multiplies the tabulated median rate by factor^N at
-                          every T9 point.
+                          raises the uncertainty factor (STARLIB's tabulated
+                          one, or --base-factor) to the Nth power.
   --options N,...         starlib_option values to sweep (default: 1,2)
   --jobs N, -j N           Number of ppn.exe runs in parallel (default: 4)
   --dry-run                Build directories without launching ppn.exe
   -h, --help                Show this help
 
-Example:
+Examples:
   julia build_sigma_sweep.jl co_nova_1.15_10_B_mixed/ppn 18F_pa_16O \\
       --reaction p,f18,he4,o15 --jobs 8
+  julia build_sigma_sweep.jl co_nova_1.15_10_B_mixed/ppn 13N_pg_14O \\
+      --rate-index 306 --base-factor 10 --jobs 8
 """)
 end
 
@@ -366,6 +389,38 @@ function build_run!(template_dir::AbstractString, run_dir::AbstractString, optio
     return ppn_dir
 end
 
+"""
+    build_flat_factor_run!(template_dir, run_dir, option; factor_spec = nothing) -> String
+
+Like [`build_run!`](@ref), but for reactions with no STARLIB uncertainty to
+sweep: instead of rewriting a STARLIB data file, this patches
+`rate_index`/`rate_factor` in `ppn_physics.input` via
+[`write_rate_factors!`](@ref) — ppn's own runtime rate-factor mechanism
+(`apply_rate_factors` in `evaluate_rates.F90`), a single flat,
+T9-independent multiplicative scalar applied to whatever the reaction
+evaluates to at each timestep, addressed by reaction *index* rather than
+species match. Works for any rate source (NACRE, JINA, weak-rate tables,
+Iliadis, reverse rates, ...), unlike `build_run!`'s STARLIB-specific
+mechanism. `factor_spec = (index = N, value = F)`, or `nothing` for an
+unmodified baseline run. NPDATA is always a plain symlink here — nothing in
+this mechanism ever touches a data file.
+"""
+function build_flat_factor_run!(template_dir::AbstractString, run_dir::AbstractString, option::Integer;
+                                 factor_spec::Union{Nothing,NamedTuple} = nothing)
+    shared_npdata = _find_npdata_dir(template_dir)
+    ppn_dir = joinpath(run_dir, "ppn")
+    copy_ppn_files!(template_dir, ppn_dir)
+
+    dest_npdata = joinpath(run_dir, "NPDATA")
+    link_plain_npdata!(shared_npdata, dest_npdata)
+
+    physics_input = joinpath(ppn_dir, "ppn_physics.input")
+    write(physics_input, update_namelist(read(physics_input, String), ["starlib_option" => option]))
+    factor_spec === nothing || write_rate_factors!(physics_input, [(factor_spec.index, factor_spec.value)])
+
+    return ppn_dir
+end
+
 # ---------------------------------------------------------------------------
 # top level
 # ---------------------------------------------------------------------------
@@ -410,6 +465,98 @@ function build_sigma_sweep(template_dir::AbstractString, out_dir::AbstractString
     end
 
     return run_dirs
+end
+
+"""
+    build_flat_factor_sweep(template_dir, out_dir, reaction_index; base_factor = 10.0,
+                             sigmas = [-2, -1, 1, 2], options = [1, 2],
+                             jobs = 4, dry_run = false) -> Vector{String}
+
+Build a blanket-factor-uncertainty sweep for one reaction that has no
+STARLIB (or other tabulated) uncertainty to draw on — Iliadis (2002)'s own
+fallback for such cases: assign a flat factor uncertainty (`base_factor`,
+e.g. 10) and treat it exactly like STARLIB's f.u., `base_factor^sigma` (same
+lognormal-exponent convention as [`build_sigma_sweep`](@ref) — `sigma = 2`
+means `base_factor^2` — just with one constant number instead of a
+T9-dependent tabulated column).
+
+`reaction_index` is a `networksetup.txt` index, resolved by the caller ahead
+of time (e.g. via `network(PPNRun(baseline_dir)).reactions`) — there's no
+species-token matching here, since a rate-factor sweep works by index, not
+by rewriting a data file, so it works for any background source (NACRE,
+JINA, weak-rate tables, Iliadis, reverse rates, ...) as long as you already
+know which row you mean.
+
+Builds `out_dir/baseline_opt<N>/ppn/` and `out_dir/run_<sigma>sigma_opt<N>/ppn/`
+for every `N` in `options` and `sigma` in `sigmas` (see
+[`build_flat_factor_run!`](@ref)), then (unless `dry_run`) runs every one of
+them via `run_parallel`. Returns the `ppn/` directories built.
+"""
+function build_flat_factor_sweep(template_dir::AbstractString, out_dir::AbstractString, reaction_index::Integer;
+                                  base_factor::Real = 10.0, sigmas::Vector{<:Real} = [-2, -1, 1, 2],
+                                  options::Vector{<:Integer} = [1, 2], jobs::Integer = 4, dry_run::Bool = false)
+    run_dirs = String[]
+    for option in options
+        baseline_dir = joinpath(out_dir, "baseline_opt$option")
+        push!(run_dirs, build_flat_factor_run!(template_dir, baseline_dir, option))
+
+        for sigma in sigmas
+            run_dir = joinpath(out_dir, "run_$(sigma_label(sigma))_opt$option")
+            push!(run_dirs, build_flat_factor_run!(template_dir, run_dir, option;
+                                                     factor_spec = (index = reaction_index, value = base_factor^sigma)))
+        end
+    end
+
+    if !dry_run
+        results = run_parallel(run_dirs; jobs)
+        failed = [dir for (dir, ok) in results if !ok]
+        isempty(failed) || @warn "some flat-factor-sweep runs failed" failed
+    end
+
+    return run_dirs
+end
+
+"""
+    read_flat_factor_reactions_file(path) -> Vector{Pair{String,Int}}
+
+Parse a flat-factor `--rate-index-file`: one reaction per line, `name: index`
+(blank lines and lines starting with `#` are skipped), e.g. `"13N_pg_14O: 306"`.
+"""
+function read_flat_factor_reactions_file(path::AbstractString)
+    reactions = Pair{String,Int}[]
+    for line in eachline(path)
+        line = strip(line)
+        (isempty(line) || startswith(line, "#")) && continue
+        occursin(':', line) || throw(ArgumentError("malformed line in $path (expected \"name: index\"): $line"))
+        name, index_text = split(line, ':'; limit = 2)
+        push!(reactions, strip(name) => parse(Int, strip(index_text)))
+    end
+    isempty(reactions) && throw(ArgumentError("no reactions found in $path"))
+    return reactions
+end
+
+"""
+    build_batch_flat_factor_sweep(template_dir, out_dir_root, reactions;
+                                   base_factor = 10.0, sigmas = [-2, -1, 1, 2],
+                                   options = [1, 2], jobs = 4, dry_run = false) -> Dict{String,Vector{String}}
+
+Build a [`build_flat_factor_sweep`](@ref) at `out_dir_root/<name>/` for every
+`(name, reaction_index)` pair in `reactions` (see
+[`read_flat_factor_reactions_file`](@ref)), one after another within a
+single Julia session — same rationale as [`build_batch_sigma_sweep`](@ref).
+Returns a `name => run_dirs` `Dict`.
+"""
+function build_batch_flat_factor_sweep(template_dir::AbstractString, out_dir_root::AbstractString,
+                                        reactions::Vector{<:Pair}; base_factor::Real = 10.0,
+                                        sigmas::Vector{<:Real} = [-2, -1, 1, 2], options::Vector{<:Integer} = [1, 2],
+                                        jobs::Integer = 4, dry_run::Bool = false)
+    results = Dict{String,Vector{String}}()
+    for (i, (name, index)) in enumerate(reactions)
+        println("[$i/$(length(reactions))] building $name (index $index) ...")
+        out_dir = joinpath(out_dir_root, name)
+        results[name] = build_flat_factor_sweep(template_dir, out_dir, index; base_factor, sigmas, options, jobs, dry_run)
+    end
+    return results
 end
 
 """
@@ -472,6 +619,7 @@ end
 
 if abspath(PROGRAM_FILE) == (@__FILE__)
     let jobs = 4, dry_run = false, reaction_arg = nothing, reactions_file = nothing,
+        rate_index_arg = nothing, rate_index_file = nothing, base_factor = 10.0,
         sigmas = Float64[-2, -1, 1, 2], options = Int[1, 2], positional = String[], i = 1
 
         if isempty(ARGS) || ARGS[1] in ("-h", "--help")
@@ -487,6 +635,15 @@ if abspath(PROGRAM_FILE) == (@__FILE__)
             elseif a == "--reactions-file"
                 i == length(ARGS) && error("--reactions-file requires a value")
                 reactions_file = ARGS[i + 1]; i += 2
+            elseif a == "--rate-index"
+                i == length(ARGS) && error("--rate-index requires a value")
+                rate_index_arg = parse(Int, ARGS[i + 1]); i += 2
+            elseif a == "--rate-index-file"
+                i == length(ARGS) && error("--rate-index-file requires a value")
+                rate_index_file = ARGS[i + 1]; i += 2
+            elseif a == "--base-factor"
+                i == length(ARGS) && error("--base-factor requires a value")
+                base_factor = parse(Float64, ARGS[i + 1]); i += 2
             elseif a == "--sigmas"
                 i == length(ARGS) && error("--sigmas requires a value")
                 sigmas = parse_real_list(ARGS[i + 1]); i += 2
@@ -509,11 +666,14 @@ if abspath(PROGRAM_FILE) == (@__FILE__)
             println(stderr, "Expected 2 positional arguments (<template_dir> <out_dir>), got $(length(positional)).\n")
             usage(); exit(1)
         end
-        if reaction_arg === nothing && reactions_file === nothing
-            println(stderr, "one of --reaction or --reactions-file is required.\n"); usage(); exit(1)
+        modes_given = count(!isnothing, (reaction_arg, reactions_file, rate_index_arg, rate_index_file))
+        if modes_given == 0
+            println(stderr, "one of --reaction, --reactions-file, --rate-index, or --rate-index-file is required.\n")
+            usage(); exit(1)
         end
-        if reaction_arg !== nothing && reactions_file !== nothing
-            println(stderr, "--reaction and --reactions-file are mutually exclusive.\n"); usage(); exit(1)
+        if modes_given > 1
+            println(stderr, "--reaction, --reactions-file, --rate-index, and --rate-index-file are mutually exclusive.\n")
+            usage(); exit(1)
         end
 
         template_dir, out_dir = positional
@@ -521,8 +681,15 @@ if abspath(PROGRAM_FILE) == (@__FILE__)
             reactions = read_reactions_file(reactions_file)
             results = build_batch_sigma_sweep(template_dir, out_dir, reactions; sigmas, options, jobs, dry_run)
             println(length(results), " reaction(s) built under ", out_dir)
-        else
+        elseif reaction_arg !== nothing
             built = build_sigma_sweep(template_dir, out_dir, reaction_arg; sigmas, options, jobs, dry_run)
+            println(length(built), " run(s) built at ", out_dir)
+        elseif rate_index_file !== nothing
+            reactions = read_flat_factor_reactions_file(rate_index_file)
+            results = build_batch_flat_factor_sweep(template_dir, out_dir, reactions; base_factor, sigmas, options, jobs, dry_run)
+            println(length(results), " reaction(s) built under ", out_dir)
+        else
+            built = build_flat_factor_sweep(template_dir, out_dir, rate_index_arg; base_factor, sigmas, options, jobs, dry_run)
             println(length(built), " run(s) built at ", out_dir)
         end
     end
