@@ -1,0 +1,8 @@
+name = "MesaJL"
+uuid = "7d8e9f1a-2b3c-4d5e-8f6a-1b2c3d4e5f6a"
+version = "0.1.0"
+authors = ["Shane Gervais"]
+
+[deps]
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
