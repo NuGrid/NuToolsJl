@@ -3,7 +3,8 @@ module MesaJL
 using CSV
 using DataFrames
 
-export read_history, read_profile, read_profiles_index, profile_path_for_model
+export read_history, read_profile, read_profiles_index, profile_path_for_model,
+       extract_zone_trajectory, write_ppn_trajectory
 
 """
     read_history(path) -> DataFrame
@@ -61,5 +62,7 @@ function profile_path_for_model(logs_dir, model_number)
     row === nothing && return nothing
     return joinpath(logs_dir, "profile$(idx.profile_number[row]).data")
 end
+
+include("trajectories.jl")
 
 end # module MesaJL
