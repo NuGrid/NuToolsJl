@@ -1,14 +1,22 @@
 # trajectory_plot.jl — plots of the thermodynamic trajectory that drives a run.
 
 """
-    plot_trajectory(traj::DataFrame; title = "Trajectory", figure_size = (900, 550)) -> CM.Figure
+    plot_trajectory(traj::DataFrame; title = "Trajectory", figure_size = (900, 550),
+                     xlims = nothing) -> CM.Figure
 
 Temperature (T9, left axis) and density (right axis) vs. time, both on a log
 scale, from a trajectory `DataFrame` (see [`read_trajectory`](@ref)/
 [`trajectory`](@ref)). Time is left linear since trajectories commonly start
 at `t = 0`, which a log axis can't represent.
+
+Pass `xlims = (lo, hi)` (in seconds, matching the time axis) to zoom into a
+sub-range — e.g. just the burst itself, which is typically a tiny fraction
+of the full accretion-to-ejection span and otherwise gets compressed into a
+sliver at the right edge of the plot. `xlims = nothing` (the default) shows
+the full range.
 """
-function plot_trajectory(traj::DataFrame; title = "Trajectory", figure_size = (900, 550))
+function plot_trajectory(traj::DataFrame; title = "Trajectory", figure_size = (900, 550),
+                          xlims = nothing)
     return with_nugrid_theme() do
         fig = CM.Figure(size = figure_size)
         ax1 = CM.Axis(fig[1, 1]; xlabel = "time (s)", ylabel = "T9 (GK)", title,
@@ -21,6 +29,7 @@ function plot_trajectory(traj::DataFrame; title = "Trajectory", figure_size = (9
         CM.linkxaxes!(ax1, ax2)
         CM.lines!(ax1, traj.time_s, traj.temperature_T9; color = :firebrick)
         CM.lines!(ax2, traj.time_s, traj.density_cgs; color = :steelblue)
+        xlims === nothing || CM.xlims!(ax1, xlims...)
         fig
     end
 end

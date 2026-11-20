@@ -4,7 +4,8 @@ using CSV
 using DataFrames
 
 export read_history, read_profile, read_profiles_index, profile_path_for_model,
-       extract_zone_trajectory, write_ppn_trajectory
+       extract_zone_trajectory, write_ppn_trajectory,
+       run_mesa_parallel, pin_single_threaded_openmp!
 
 """
     read_history(path) -> DataFrame
@@ -64,5 +65,6 @@ function profile_path_for_model(logs_dir, model_number)
 end
 
 include("trajectories.jl")
+include("run_parallel.jl")
 
 end # module MesaJL
