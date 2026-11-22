@@ -4,7 +4,7 @@ A Julia toolkit for analyzing [NuPPN](https://github.com/NuGrid/NuPPN) (nuclear
 post-processing) and MESA output: reading run results, nuclear-chart and
 sensitivity plots, and orchestration scripts for building rate-factor sweeps.
 
-This repo bundles two packages:
+This repo bundles these packages:
 
 - **[`NuGridJl/`](NuGridJl)** — the active package. Reads completed `nuppn`
   output (abundances, fluxes, `x-time.dat`, the reaction network, the isotope
@@ -14,6 +14,11 @@ This repo bundles two packages:
   `NuGridJl/tools/` holds the run-orchestration scripts (building sweeps,
   launching `ppn.exe`) that write inputs and launch runs — deliberately kept
   out of the package itself, which only ever reads finished output.
+- **[`MC/`](MC)**: reaction-rate Monte Carlo sensitivity studies with `ppn.exe`. It runs thousands
+  of samples in parallel (restartable, SLURM-array ready), collects them and ranks the reactions
+  that control each abundance or isotopic ratio by Spearman correlation and KSG mutual information,
+  optionally beside the Ward et al. (2025) nova values. It uses only the standard library, and the
+  command-line tools are in `MC/bin/`. See [`MC/README.md`](MC/README.md).
 - **[`NovaJL/`](NovaJL)** — an earlier, narrower package for nova
   post-processing comparison work (decay solving, comparison plots). Kept
   for existing workflows that depend on it; `NuGridJl` is where new work
